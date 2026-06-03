@@ -12,6 +12,89 @@ const STORAGE_KEY = 'llm_config';
 const SESSIONS_KEY = 'llm_sessions';
 const ACTIVE_KEY = 'llm_active_session';
 const $ = id => document.getElementById(id);
+let USE_DATABASE = location.protocol !== 'file:';
+
+let configCache = null;
+let sessionsCache = {};
+let activeIdCache = null;
+
+async function apiRequest(path, options = {}) {
+  const resp = await fetch(path, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+  });
+  if (!resp.ok) throw new Error(await resp.text());
+  return resp.json();
+}
+
+async function loadDatabaseState() {
+  if (!USE_DATABASE) {
+    try { configCache = JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { configCache = null; }
+    try { sessionsCache = JSON.parse(localStorage.getItem(SESSIONS_KEY)) || {}; } catch { sessionsCache = {}; }
+    activeIdCache = localStorage.getItem(ACTIVE_KEY) || null;
+    return;
+  }
+
+  const state = await apiRequest('/api/state');
+  configCache = state.config || null;
+  sessionsCache = state.sessions || {};
+  activeIdCache = state.activeId || null;
+
+  await migrateLocalStorageState();
+}
+
+async function migrateLocalStorageState() {
+  const hasDatabaseData = configCache || Object.keys(sessionsCache).length > 0 || activeIdCache;
+  if (hasDatabaseData) return;
+
+  let localConfig = null;
+  let localSessions = {};
+  try { localConfig = JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch {}
+  try { localSessions = JSON.parse(localStorage.getItem(SESSIONS_KEY)) || {}; } catch {}
+  const localActiveId = localStorage.getItem(ACTIVE_KEY) || null;
+
+  if (!localConfig && Object.keys(localSessions).length === 0 && !localActiveId) return;
+
+  configCache = localConfig;
+  sessionsCache = localSessions;
+  activeIdCache = localActiveId;
+  if (configCache) await apiRequest('/api/config', { method: 'POST', body: JSON.stringify({ config: configCache }) });
+  if (Object.keys(sessionsCache).length > 0) await apiRequest('/api/sessions', { method: 'POST', body: JSON.stringify({ sessions: sessionsCache }) });
+  if (activeIdCache) await apiRequest('/api/active-session', { method: 'POST', body: JSON.stringify({ activeId: activeIdCache }) });
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(SESSIONS_KEY);
+  localStorage.removeItem(ACTIVE_KEY);
+}
+
+function persistConfig() {
+  if (USE_DATABASE) apiRequest('/api/config', { method: 'POST', body: JSON.stringify({ config: configCache }) }).catch(console.error);
+  else localStorage.setItem(STORAGE_KEY, JSON.stringify(configCache));
+}
+
+function clearPersistedConfig() {
+  if (USE_DATABASE) apiRequest('/api/config', { method: 'DELETE' }).catch(console.error);
+  else localStorage.removeItem(STORAGE_KEY);
+}
+
+function persistSessions() {
+  if (USE_DATABASE) apiRequest('/api/sessions', { method: 'POST', body: JSON.stringify({ sessions: sessionsCache }) }).catch(console.error);
+  else localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessionsCache));
+}
+
+function persistActiveId() {
+  if (USE_DATABASE) apiRequest('/api/active-session', { method: 'POST', body: JSON.stringify({ activeId: activeIdCache }) }).catch(console.error);
+  else localStorage.setItem(ACTIVE_KEY, activeIdCache || '');
+}
+
+function clearPersistedSessions() {
+  sessionsCache = {};
+  activeIdCache = null;
+  if (USE_DATABASE) apiRequest('/api/sessions', { method: 'DELETE' }).catch(console.error);
+  else {
+    localStorage.removeItem(SESSIONS_KEY);
+    localStorage.removeItem(ACTIVE_KEY);
+  }
+}
 
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(b => {
@@ -41,21 +124,25 @@ function applyPreset(i) {
 }
 
 function loadConfig() {
-  try { const c = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (c) { $('apiUrl').value = c.apiUrl || ''; $('apiKey').value = c.apiKey || ''; $('modelName').value = c.modelName || ''; } return c; } catch { return null; }
+  const c = configCache;
+  if (c) { $('apiUrl').value = c.apiUrl || ''; $('apiKey').value = c.apiKey || ''; $('modelName').value = c.modelName || ''; }
+  return c;
 }
 
-function getConfig() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { return null; } }
+function getConfig() { return configCache; }
 
 function saveConfig() {
   const c = { apiUrl: $('apiUrl').value.trim(), apiKey: $('apiKey').value.trim(), modelName: $('modelName').value.trim() };
   if (!c.apiUrl || !c.apiKey || !c.modelName) { showToast('请填写所有字段', 'var(--rose)'); return false; }
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(c));
+  configCache = c;
+  persistConfig();
   updateModelBadge(); showToast('配置已保存', 'var(--accent)'); return true;
 }
 
 $('saveBtn').onclick = saveConfig;
 $('clearBtn').onclick = () => {
-  localStorage.removeItem(STORAGE_KEY);
+  configCache = null;
+  clearPersistedConfig();
   $('apiUrl').value = ''; $('apiKey').value = ''; $('modelName').value = '';
   document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
   updateModelBadge(); showToast('配置已清除', 'var(--muted)');
@@ -70,10 +157,10 @@ function updateModelBadge() {
 }
 
 // Sessions
-function getSessions() { try { return JSON.parse(localStorage.getItem(SESSIONS_KEY)) || {}; } catch { return {}; } }
-function saveSessions(s) { localStorage.setItem(SESSIONS_KEY, JSON.stringify(s)); }
-function getActiveId() { return localStorage.getItem(ACTIVE_KEY) || null; }
-function setActiveId(id) { localStorage.setItem(ACTIVE_KEY, id); }
+function getSessions() { return sessionsCache; }
+function saveSessions(s) { sessionsCache = s; persistSessions(); }
+function getActiveId() { return activeIdCache; }
+function setActiveId(id) { activeIdCache = id; persistActiveId(); }
 
 function createSession() {
   const s = getSessions();
@@ -166,8 +253,7 @@ $('btnNewSession').onclick = () => { if (isStreaming) return; createSession(); $
 
 $('btnClearAll').onclick = () => {
   showConfirm('确定删除所有会话？此操作不可撤销。', () => {
-    localStorage.removeItem(SESSIONS_KEY);
-    localStorage.removeItem(ACTIVE_KEY);
+    clearPersistedSessions();
     renderSessionList(); renderMessages();
     showToast('所有会话已清空', 'var(--muted)');
   });
@@ -358,4 +444,16 @@ async function sendMessage() {
 function stopStreaming() { if (abortController) abortController.abort(); }
 
 // Init
-loadConfig(); updateModelBadge(); refreshChat();
+async function initApp() {
+  try {
+    await loadDatabaseState();
+  } catch (err) {
+    console.error(err);
+    showToast('数据库连接失败，已切换为浏览器临时存储', 'var(--rose)');
+    USE_DATABASE = false;
+    await loadDatabaseState();
+  }
+  loadConfig(); updateModelBadge(); refreshChat();
+}
+
+initApp();

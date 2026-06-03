@@ -125,7 +125,7 @@ body {
 
 /* ── Chat view background ── */
 #chatView {
-  background: url('images/1.png') center center / cover no-repeat;
+  background: url('../images/1.png') center center / cover no-repeat;
 }
 
 #chatView::before {
@@ -143,7 +143,7 @@ body {
   align-items: center; justify-content: center;
   overflow-y: auto;
   padding: clamp(80px, 12vh, 140px) clamp(24px, 6vw, 80px);
-  background: url('images/2.png') center center / cover no-repeat;
+  background: url('../images/2.png') center center / cover no-repeat;
 }
 
 #configView::before {
