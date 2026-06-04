@@ -6,6 +6,7 @@ from pathlib import Path
 import argparse
 import json
 import mimetypes
+import os
 import shlex
 import shutil
 import sqlite3
@@ -23,7 +24,7 @@ DB_PATH = DATA_DIR / "llm_studio.sqlite"
 HOST = "127.0.0.1"
 PORT = 8765
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 PRESET_URLS = {
@@ -151,6 +152,8 @@ def create_schema(conn):
             project_id TEXT,
             mode TEXT NOT NULL DEFAULT 'chat',
             status TEXT NOT NULL DEFAULT 'idle',
+            pi_session_path TEXT,
+            pi_session_id TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
@@ -176,6 +179,8 @@ def create_schema(conn):
     ensure_column(conn, "chat_sessions", "kind", "TEXT NOT NULL DEFAULT 'chat'")
     ensure_column(conn, "chat_sessions", "mode", "TEXT NOT NULL DEFAULT 'chat'")
     ensure_column(conn, "chat_sessions", "status", "TEXT NOT NULL DEFAULT 'idle'")
+    ensure_column(conn, "chat_sessions", "pi_session_path", "TEXT")
+    ensure_column(conn, "chat_sessions", "pi_session_id", "TEXT")
     ensure_column(conn, "chat_messages", "thinking_ms", "INTEGER")
     conn.execute(
         """
@@ -446,8 +451,8 @@ def save_sessions(conn, sessions):
         conn.execute(
             """
             INSERT INTO chat_sessions
-                (id, title, kind, project_id, mode, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, kind, project_id, mode, status, pi_session_path, pi_session_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.get("id") or session_id,
@@ -456,6 +461,8 @@ def save_sessions(conn, sessions):
                 session.get("projectId"),
                 session.get("mode") or "chat",
                 session.get("status") or "idle",
+                session.get("piSessionPath"),
+                session.get("piSessionId"),
                 created_at,
                 timestamp,
             ),
@@ -485,7 +492,7 @@ def load_sessions(conn):
     sessions = {}
     session_rows = conn.execute(
         """
-        SELECT id, title, kind, project_id, mode, status, created_at
+        SELECT id, title, kind, project_id, mode, status, pi_session_path, pi_session_id, created_at
         FROM chat_sessions
         ORDER BY created_at DESC
         """
@@ -507,6 +514,8 @@ def load_sessions(conn):
             "projectId": row["project_id"],
             "mode": row["mode"] or "chat",
             "status": row["status"] or "idle",
+            "piSessionPath": row["pi_session_path"],
+            "piSessionId": row["pi_session_id"],
             "created": row["created_at"],
             "messages": [
                 {
@@ -574,6 +583,70 @@ def inspect_pi_cli(command=""):
     }
 
 
+def pi_session_root():
+    configured = os.environ.get("PI_CODING_AGENT_SESSION_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".pi" / "agent" / "sessions"
+
+
+def pi_session_dir_for_cwd(cwd):
+    safe_name = str(Path(cwd).resolve()).replace(":", "-").replace("\\", "-").replace("/", "-")
+    return pi_session_root() / f"--{safe_name}--"
+
+
+def pi_session_info(session_path):
+    path = Path(session_path)
+    session_id = ""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            first_line = handle.readline().strip()
+        if first_line:
+            record = json.loads(first_line)
+            if record.get("type") == "session":
+                session_id = record.get("id") or ""
+    except (OSError, json.JSONDecodeError):
+        pass
+    if not session_id and "_" in path.stem:
+        session_id = path.stem.rsplit("_", 1)[-1]
+    return {"id": session_id, "path": str(path)}
+
+
+def resolve_pi_session_path(session_path):
+    raw_path = (session_path or "").strip().strip("\"'`")
+    if not raw_path:
+        return None
+    try:
+        root = pi_session_root().resolve()
+        candidate = Path(raw_path).expanduser().resolve()
+        candidate.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    if candidate.suffix.lower() != ".jsonl" or not candidate.is_file():
+        return None
+    return str(candidate)
+
+
+def latest_pi_session_file(cwd, started_at):
+    session_dir = pi_session_dir_for_cwd(cwd)
+    if not session_dir.is_dir():
+        return None
+    candidates = []
+    try:
+        for path in session_dir.glob("*.jsonl"):
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            if stat.st_mtime >= started_at - 2:
+                candidates.append((stat.st_mtime, path))
+    except OSError:
+        return None
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
 def resolve_project_cwd(project):
     project_path = (project or {}).get("path") or str(ROOT)
     try:
@@ -608,15 +681,27 @@ def resolve_project_image_path(project, image_path):
     return candidate
 
 
-def stream_local_cli(command, prompt, cwd):
+def has_explicit_pi_session_args(args):
+    session_flags = {"--session", "--continue", "-c", "--resume", "-r", "--fork", "--no-session"}
+    for arg in args[1:]:
+        if arg in session_flags or arg.startswith("--session=") or arg.startswith("--fork="):
+            return True
+    return False
+
+
+def add_pi_session_args(args, session_path):
+    if not session_path or not args or has_explicit_pi_session_args(args):
+        return args
+    return [args[0], "--session", session_path, *args[1:]]
+
+
+def stream_local_cli(command, prompt, cwd, session_path=None):
     if "{prompt}" in command:
-        args = [
-            arg.replace("{prompt}", prompt)
-            for arg in split_command(command)
-        ]
+        args = add_pi_session_args(split_command(command), session_path)
+        args = [arg.replace("{prompt}", prompt) for arg in args]
         stdin_payload = None
     else:
-        args = split_command(command)
+        args = add_pi_session_args(split_command(command), session_path)
         stdin_payload = prompt
 
     args = resolve_command_args(args)
@@ -658,6 +743,16 @@ def stream_local_cli(command, prompt, cwd):
     code = proc.wait()
     if code != 0:
         yield {"error": f"Pi CLI 已退出，退出码 {code}。"}
+
+
+def stream_pi_cli(command, prompt, cwd, session_path=None):
+    started_at = time.time()
+    for event in stream_local_cli(command, prompt, cwd, session_path):
+        yield event
+
+    final_session = Path(session_path) if session_path else latest_pi_session_file(cwd, started_at)
+    if final_session and final_session.is_file():
+        yield {"session": pi_session_info(final_session)}
 
 
 class LLMStudioHandler(SimpleHTTPRequestHandler):
@@ -715,7 +810,8 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         if prompt is None:
             prompt = latest_user_prompt(payload.get("messages") or [])
         cwd = resolve_project_cwd(project)
-        self.stream_ndjson(stream_local_cli(command, prompt, cwd))
+        session_path = resolve_pi_session_path(payload.get("piSessionPath"))
+        self.stream_ndjson(stream_pi_cli(command, prompt, cwd, session_path))
 
     def send_project_image(self):
         parsed = urlparse(self.path)

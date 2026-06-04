@@ -1414,12 +1414,15 @@ async function readOpenAIStream(cfg, messages, onDelta) {
   }
 }
 
-async function readCliStream(prompt, messages, onDelta) {
+async function readCliStream(prompt, messages, onDelta, onSession) {
+  const activeSession = getActiveSession();
   const resp = await fetch('/api/cli/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
+      sessionId: getActiveId(),
       projectId: getActiveProjectId(),
+      piSessionPath: activeSession?.piSessionPath || '',
       mode: isAgentWorkspace() ? 'task' : activeRunMode,
       prompt,
       messages,
@@ -1441,6 +1444,7 @@ async function readCliStream(prompt, messages, onDelta) {
       const event = JSON.parse(line);
       if (event.error) throw new Error(event.error);
       if (event.delta) onDelta(event.delta);
+      if (event.session && onSession) onSession(event.session);
     }
   }
 }
@@ -1461,6 +1465,7 @@ async function sendMessage() {
   session.projectId = isAgentWorkspace() ? (session.projectId || getActiveProjectId()) : null;
   session.mode = isAgentWorkspace() ? 'task' : 'chat';
   session.status = isAgentWorkspace() ? 'running' : 'idle';
+  const requestSessionId = getActiveId();
   const responseKind = session.kind;
   const responseProjectId = session.projectId;
 
@@ -1503,7 +1508,15 @@ async function sendMessage() {
       fullContent += delta;
       renderBotStream(fullContent);
     };
-    if (isAgentWorkspace()) await readCliStream(text, messages, onDelta);
+    const onPiSession = piSession => {
+      const sessions = getSessions();
+      const target = requestSessionId && sessions[requestSessionId];
+      if (!target) return;
+      target.piSessionPath = piSession.path || target.piSessionPath || '';
+      target.piSessionId = piSession.id || target.piSessionId || '';
+      saveSessions(sessions);
+    };
+    if (isAgentWorkspace()) await readCliStream(text, messages, onDelta, onPiSession);
     else await readOpenAIStream(cfg, messages, onDelta);
   } catch (err) {
     if (err.name === 'AbortError') { fullContent += '\n\n[已停止]'; }
