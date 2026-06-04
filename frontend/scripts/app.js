@@ -8,6 +8,10 @@ const PRESETS = [
   { name: 'SiliconFlow', url: 'https://api.siliconflow.cn/v1/chat/completions', models: ['deepseek-ai/DeepSeek-V3', 'Qwen/Qwen2.5-72B-Instruct', 'Pro/deepseek-ai/DeepSeek-V3'] },
   { name: 'Pi CLI',   url: '', models: ['default'], kind: 'cli' },
 ];
+const CHAT_SCOPE = 'chat';
+const AGENT_SCOPE = 'agent';
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
+const IMAGE_EXT_PATTERN = IMAGE_EXTENSIONS.join('|');
 
 const STORAGE_KEY = 'llm_config';
 const PROJECTS_KEY = 'llm_projects';
@@ -24,6 +28,8 @@ let activeProjectIdCache = null;
 let sessionsCache = {};
 let activeIdCache = null;
 let activePresetIndex = -1;
+let activeConfigScope = CHAT_SCOPE;
+let activeWorkspace = CHAT_SCOPE;
 let activeRunMode = 'chat';
 
 async function apiRequest(path, options = {}) {
@@ -98,14 +104,15 @@ function persistConfig() {
 
 function ensurePiCliDefaultConfig() {
   const store = toConfigStore(configCache);
-  if (store.activeProvider || Object.keys(store.providers).length > 0) return;
-  store.activeProvider = 'Pi CLI';
-  store.providers['Pi CLI'] = {
-    provider: 'Pi CLI',
-    apiUrl: '',
-    apiKey: '',
-    modelName: 'default',
-  };
+  if (!store.providers['Pi CLI']) {
+    store.providers['Pi CLI'] = {
+      provider: 'Pi CLI',
+      apiUrl: '',
+      apiKey: '',
+      modelName: 'default',
+    };
+  }
+  if (!store.activeAgentProvider) store.activeAgentProvider = 'Pi CLI';
   configCache = store;
   persistConfig();
 }
@@ -171,21 +178,57 @@ function clearPersistedSessions() {
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(b => {
   b.addEventListener('click', () => {
+    const tab = b.dataset.tab;
+    const targetViewId = (tab === CHAT_SCOPE || tab === AGENT_SCOPE) ? 'chatView' : `${tab}View`;
     document.querySelectorAll('.tab-btn').forEach(x => x.classList.toggle('active', x === b));
-    document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === b.dataset.tab + 'View'));
-    if (b.dataset.tab === 'projects') renderProjects();
-    if (b.dataset.tab === 'chat') refreshChat();
-    if (b.dataset.tab === 'config') $('configView').scrollTop = 0;
+    document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === targetViewId));
+    if (tab === 'projects') renderProjects();
+    if (tab === CHAT_SCOPE || tab === AGENT_SCOPE) {
+      activeWorkspace = tab;
+      if (tab === AGENT_SCOPE) activeRunMode = 'task';
+      refreshChat();
+    }
+    if (tab === 'config') $('configView').scrollTop = 0;
   });
 });
 
 // Config
 const presetsEl = $('presets');
-PRESETS.forEach((p, i) => {
-  const btn = document.createElement('button');
-  btn.className = 'preset-btn'; btn.textContent = p.name;
-  btn.onclick = () => applyPreset(i);
-  presetsEl.appendChild(btn);
+
+function presetIndicesForScope(scope = activeConfigScope) {
+  return PRESETS
+    .map((preset, index) => ({ preset, index }))
+    .filter(({ preset }) => scope === AGENT_SCOPE ? preset.kind === 'cli' : preset.kind !== 'cli')
+    .map(({ index }) => index);
+}
+
+function renderPresets() {
+  presetsEl.innerHTML = '';
+  presetIndicesForScope().forEach(i => {
+    const p = PRESETS[i];
+    const btn = document.createElement('button');
+    btn.className = 'preset-btn';
+    btn.dataset.index = String(i);
+    btn.textContent = p.name;
+    btn.onclick = () => applyPreset(i);
+    presetsEl.appendChild(btn);
+  });
+}
+
+function setConfigScope(scope) {
+  activeConfigScope = scope;
+  document.querySelectorAll('.config-scope-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.scope === scope);
+  });
+  if ($('configHeaderTitle')) $('configHeaderTitle').innerHTML = scope === AGENT_SCOPE ? 'Agent <em>配置</em>' : '对话 <em>配置</em>';
+  if ($('configHeaderText')) $('configHeaderText').textContent = scope === AGENT_SCOPE ? '配置用于本地项目操作的 Pi Agent' : '配置用于普通对话的 API 模型';
+  if ($('goChatBtn')) $('goChatBtn').innerHTML = scope === AGENT_SCOPE ? '保存并进入 Agent &rarr;' : '保存并开始对话 &rarr;';
+  renderPresets();
+  loadConfig();
+}
+
+document.querySelectorAll('.config-scope-btn').forEach(btn => {
+  btn.onclick = () => setConfigScope(btn.dataset.scope || CHAT_SCOPE);
 });
 
 function applyPreset(i) {
@@ -225,6 +268,10 @@ function isCliProviderName(name) {
 
 function isCliConfig(config = getConfig()) {
   return isCliProviderName(config?.provider);
+}
+
+function isAgentWorkspace() {
+  return activeWorkspace === AGENT_SCOPE;
 }
 
 function syncProviderFields(activeIndex) {
@@ -289,24 +336,37 @@ function isConfigStore(config) {
 
 function toConfigStore(config) {
   if (isConfigStore(config)) {
+    const activeProvider = config.activeProvider || null;
+    const providers = config.providers || {};
+    const activeChatProvider = config.activeChatProvider
+      || (activeProvider && !isCliProviderName(activeProvider) ? activeProvider : null)
+      || Object.keys(providers).find(name => !isCliProviderName(name))
+      || null;
+    const activeAgentProvider = config.activeAgentProvider
+      || (activeProvider && isCliProviderName(activeProvider) ? activeProvider : null)
+      || Object.keys(providers).find(name => isCliProviderName(name))
+      || null;
     return {
-      activeProvider: config.activeProvider || null,
-      providers: config.providers || {},
+      activeChatProvider,
+      activeAgentProvider,
+      providers,
     };
   }
 
   if (config && (config.apiUrl || config.apiKey || config.modelName)) {
     const presetIndex = getPresetIndexForConfig(config);
     const provider = providerNameForIndex(presetIndex);
+    const isCli = isCliProviderName(provider);
     return {
-      activeProvider: provider,
+      activeChatProvider: isCli ? null : provider,
+      activeAgentProvider: isCli ? provider : null,
       providers: {
         [provider]: { ...config, provider },
       },
     };
   }
 
-  return { activeProvider: null, providers: {} };
+  return { activeChatProvider: null, activeAgentProvider: null, providers: {} };
 }
 
 function getProviderConfig(index) {
@@ -316,12 +376,20 @@ function getProviderConfig(index) {
 
 function getActiveProviderConfig() {
   const store = toConfigStore(configCache);
-  if (!store.activeProvider) return null;
-  return store.providers[store.activeProvider] || null;
+  const provider = activeConfigScope === AGENT_SCOPE ? store.activeAgentProvider : store.activeChatProvider;
+  if (!provider) return null;
+  return store.providers[provider] || null;
+}
+
+function getScopedConfig(scope = activeWorkspace) {
+  const store = toConfigStore(configCache);
+  const provider = scope === AGENT_SCOPE ? store.activeAgentProvider : store.activeChatProvider;
+  if (!provider) return null;
+  return store.providers[provider] || null;
 }
 
 function syncPresetSelection(activeIndex) {
-  document.querySelectorAll('.preset-btn').forEach((b, j) => b.classList.toggle('active', j === activeIndex));
+  document.querySelectorAll('.preset-btn').forEach(b => b.classList.toggle('active', Number(b.dataset.index) === activeIndex));
 }
 
 function updateModelDatalist(activeIndex) {
@@ -338,8 +406,10 @@ function updateModelDatalist(activeIndex) {
 function loadConfig() {
   configCache = toConfigStore(configCache);
   const c = getActiveProviderConfig();
-  let presetIndex = getPresetIndexForProviderName(configCache.activeProvider);
+  const activeProvider = activeConfigScope === AGENT_SCOPE ? configCache.activeAgentProvider : configCache.activeChatProvider;
+  let presetIndex = getPresetIndexForProviderName(activeProvider);
   if (presetIndex < 0) presetIndex = getPresetIndexForConfig(c);
+  if (!presetIndicesForScope().includes(presetIndex)) presetIndex = presetIndicesForScope()[0] ?? -1;
   activePresetIndex = presetIndex;
 
   if (c) {
@@ -360,13 +430,21 @@ function loadConfig() {
   return c;
 }
 
-function getConfig() { return getActiveProviderConfig(); }
+function getConfig(scope = activeWorkspace) { return getScopedConfig(scope); }
 
 function saveConfig() {
   const c = { apiUrl: $('apiUrl').value.trim(), apiKey: $('apiKey').value.trim(), modelName: $('modelName').value.trim() };
   const presetIndex = activePresetIndex >= 0 ? activePresetIndex : getPresetIndexForConfig(c);
   const provider = providerNameForIndex(presetIndex);
   const isCli = isCliProviderName(provider);
+  if (activeConfigScope === CHAT_SCOPE && isCli) {
+    showToast('对话模型不能使用 Pi CLI', 'var(--rose)');
+    return false;
+  }
+  if (activeConfigScope === AGENT_SCOPE && !isCli) {
+    showToast('Agent 只能使用 Pi CLI', 'var(--rose)');
+    return false;
+  }
   if (isCli) {
     c.apiKey = '';
     c.modelName = c.modelName || 'default';
@@ -375,7 +453,8 @@ function saveConfig() {
     return false;
   }
   const store = toConfigStore(configCache);
-  store.activeProvider = provider;
+  if (activeConfigScope === AGENT_SCOPE) store.activeAgentProvider = provider;
+  else store.activeChatProvider = provider;
   store.providers[provider] = { ...c, provider };
   configCache = store;
   persistConfig();
@@ -392,7 +471,8 @@ $('clearBtn').onclick = () => {
   const store = toConfigStore(configCache);
   const provider = providerNameForIndex(activePresetIndex);
   delete store.providers[provider];
-  store.activeProvider = null;
+  if (activeConfigScope === AGENT_SCOPE) store.activeAgentProvider = null;
+  else store.activeChatProvider = null;
   configCache = Object.keys(store.providers).length ? store : null;
   if (configCache) persistConfig();
   else clearPersistedConfig();
@@ -402,7 +482,11 @@ $('clearBtn').onclick = () => {
 };
 $('toggleKey').onclick = () => { const i = $('apiKey'); i.type = i.type === 'password' ? 'text' : 'password'; };
 $('apiUrl').addEventListener('input', updatePiCliPathStatus);
-$('goChatBtn').onclick = () => { if (saveConfig()) { document.querySelectorAll('.tab-btn').forEach(x => x.classList.toggle('active', x.dataset.tab === 'chat')); document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'chatView')); refreshChat(); } };
+$('goChatBtn').onclick = () => {
+  if (!saveConfig()) return;
+  const target = activeConfigScope === AGENT_SCOPE ? AGENT_SCOPE : CHAT_SCOPE;
+  document.querySelectorAll(`.tab-btn[data-tab="${target}"]`).forEach(x => x.click());
+};
 
 function updateModelBadge() {
   const c = getConfig(), b = $('modelBadge');
@@ -423,44 +507,144 @@ function setActiveProject(id) {
   if (!projectSessions.includes(getActiveId())) setActiveId(projectSessions[0] || null);
   renderProjectControls();
   renderProjects();
-  refreshChat();
+  if (isAgentWorkspace()) refreshChat();
 }
 
-function createProjectFromPrompt() {
-  const name = prompt('项目名称', '新项目');
-  if (!name) return null;
-  const path = prompt('项目路径（Pi CLI 会在这个目录执行）', '');
-  if (path === null) return null;
-  const id = 'p_' + Date.now();
+function saveProjectForm(projectId, values) {
+  const isNew = !projectId;
+  const id = projectId || 'p_' + Date.now();
+  const current = projectsCache[id] || {};
   projectsCache[id] = {
     id,
-    name: name.trim() || '新项目',
-    path: path.trim(),
-    description: '',
-    created: Date.now(),
+    name: values.name.trim() || '新项目',
+    path: values.path.trim(),
+    description: current.description || '',
+    created: current.created || Date.now(),
     updated: Date.now(),
   };
-  activeProjectIdCache = id;
+  if (isNew) activeProjectIdCache = id;
   persistProjects();
-  persistActiveProject();
+  if (isNew) persistActiveProject();
   renderProjectControls();
   renderProjects();
-  refreshChat();
-  showToast('项目已创建', 'var(--accent)');
+  if (isAgentWorkspace()) refreshChat();
+  showToast(isNew ? '项目已创建' : '项目已更新', 'var(--accent)');
   return id;
+}
+
+function openProjectForm(projectId = null) {
+  const project = projectId ? getProjects()[projectId] : null;
+  if (projectId && !project) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <form class="project-form">
+      <div class="project-form-head">
+        <h3>${project ? '编辑项目' : '新建项目'}</h3>
+        <button type="button" class="modal-x" aria-label="关闭">&times;</button>
+      </div>
+      <label>
+        <span>项目名称</span>
+        <input name="name" type="text" value="${escapeHtml(project?.name || '')}" placeholder="例如：我的应用" autocomplete="off">
+      </label>
+      <label>
+        <span>本地文件夹路径</span>
+        <input name="path" type="text" value="${escapeHtml(project?.path || '')}" placeholder="C:\\Users\\you\\project" spellcheck="false">
+      </label>
+      <p>Agent 会在这个目录里执行 Pi CLI。请填写本机可访问的完整文件夹路径。</p>
+      <div class="project-form-actions">
+        <button type="button" class="btn btn-secondary form-cancel">取消</button>
+        <button type="submit" class="btn btn-primary">保存</button>
+      </div>
+    </form>
+  `;
+  const close = () => overlay.remove();
+  document.body.appendChild(overlay);
+  const form = overlay.querySelector('form');
+  const nameInput = form.elements.name;
+  const pathInput = form.elements.path;
+  overlay.querySelector('.modal-x').onclick = close;
+  overlay.querySelector('.form-cancel').onclick = close;
+  overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+  form.onsubmit = event => {
+    event.preventDefault();
+    const name = nameInput.value.trim();
+    const path = pathInput.value.trim();
+    if (!name) {
+      showToast('请填写项目名称', 'var(--rose)');
+      nameInput.focus();
+      return;
+    }
+    if (!path) {
+      showToast('请填写本地文件夹路径', 'var(--rose)');
+      pathInput.focus();
+      return;
+    }
+    close();
+    saveProjectForm(projectId, { name, path });
+  };
+  setTimeout(() => nameInput.focus(), 0);
+}
+
+function deleteProject(projectId) {
+  const project = getProjects()[projectId];
+  if (!project) return;
+  if (Object.keys(getProjects()).length <= 1) {
+    showToast('至少保留一个项目', 'var(--rose)');
+    return;
+  }
+  showConfirm(`确定删除项目「${project.name || '未命名项目'}」？该项目下的 Agent 会话也会删除。`, () => {
+    delete projectsCache[projectId];
+    const sessions = getSessions();
+    Object.keys(sessions).forEach(sessionId => {
+      const session = sessions[sessionId];
+      if (getSessionKind(session) === AGENT_SCOPE && (session.projectId || 'default') === projectId) {
+        delete sessions[sessionId];
+      }
+    });
+    sessionsCache = sessions;
+    persistSessions();
+    if (activeProjectIdCache === projectId) {
+      activeProjectIdCache = Object.keys(projectsCache)[0] || null;
+    }
+    persistProjects();
+    persistActiveProject();
+    const visibleSessionIds = getVisibleSessionIds();
+    if (!visibleSessionIds.includes(getActiveId())) setActiveId(visibleSessionIds[0] || null);
+    renderProjectControls();
+    renderProjects();
+    if (isAgentWorkspace()) refreshChat();
+    showToast('项目已删除', 'var(--muted)');
+  });
 }
 
 function getProjectSessionIds(projectId = getActiveProjectId()) {
   return Object.values(getSessions())
-    .filter(s => (s.projectId || 'default') === projectId)
+    .filter(s => getSessionKind(s) === AGENT_SCOPE && (s.projectId || 'default') === projectId)
     .sort((a, b) => (b.created || 0) - (a.created || 0))
     .map(s => s.id);
 }
 
+function getChatSessionIds() {
+  return Object.values(getSessions())
+    .filter(s => getSessionKind(s) === CHAT_SCOPE)
+    .sort((a, b) => (b.created || 0) - (a.created || 0))
+    .map(s => s.id);
+}
+
+function getVisibleSessionIds() {
+  return isAgentWorkspace() ? getProjectSessionIds() : getChatSessionIds();
+}
+
 function renderProjectControls() {
   const project = getActiveProject();
-  if ($('projectBadge')) $('projectBadge').textContent = project?.name || '本地工作区';
-  if ($('activeProjectHint')) $('activeProjectHint').textContent = project ? project.path || project.name : '';
+  if (isAgentWorkspace()) activeRunMode = 'task';
+  if ($('projectBadge')) $('projectBadge').textContent = isAgentWorkspace() ? (project?.name || '本地工作区') : '对话无需项目';
+  if ($('activeProjectHint')) $('activeProjectHint').textContent = isAgentWorkspace() && project ? project.path || project.name : '';
+  if ($('projectSwitcher')) $('projectSwitcher').style.display = isAgentWorkspace() ? '' : 'none';
+  if ($('modeSwitch')) $('modeSwitch').style.display = isAgentWorkspace() ? '' : 'none';
+  if ($('btnNewSession')) $('btnNewSession').textContent = isAgentWorkspace() ? '+ 新建 Agent 会话' : '+ 新建对话';
+  if ($('input')) $('input').placeholder = isAgentWorkspace() ? '描述要在当前项目中执行的任务...' : '输入消息...';
 
   const select = $('projectSelect');
   if (!select) return;
@@ -483,30 +667,52 @@ function renderProjects() {
   const sessions = getSessions();
   grid.innerHTML = '';
   Object.values(getProjects()).forEach(project => {
-    const count = Object.values(sessions).filter(s => (s.projectId || 'default') === project.id).length;
+    const count = Object.values(sessions).filter(s => getSessionKind(s) === AGENT_SCOPE && (s.projectId || 'default') === project.id).length;
     const card = document.createElement('button');
     card.className = 'project-card' + (project.id === getActiveProjectId() ? ' active' : '');
     card.innerHTML = `
-      <span class="project-card-kicker">${count} 个会话</span>
+      <span class="project-card-kicker">${count} 个 Agent 会话</span>
       <strong>${escapeHtml(project.name)}</strong>
       <small>${escapeHtml(project.path || '未设置路径')}</small>
+      <span class="project-card-actions">
+        <span class="project-action" data-action="edit">编辑</span>
+        <span class="project-action danger" data-action="delete">删除</span>
+      </span>
     `;
-    card.onclick = () => setActiveProject(project.id);
+    card.onclick = event => {
+      const action = event.target?.dataset?.action;
+      if (action === 'edit') {
+        event.stopPropagation();
+        openProjectForm(project.id);
+        return;
+      }
+      if (action === 'delete') {
+        event.stopPropagation();
+        deleteProject(project.id);
+        return;
+      }
+      setActiveProject(project.id);
+    };
+    card.ondblclick = event => {
+      if (event.target?.dataset?.action) return;
+      setActiveProject(project.id);
+      document.querySelector('[data-tab=agent]')?.click();
+    };
     grid.appendChild(card);
   });
 }
 
 if ($('projectSelect')) $('projectSelect').onchange = e => setActiveProject(e.target.value);
-if ($('btnNewProject')) $('btnNewProject').onclick = createProjectFromPrompt;
-if ($('btnCreateProject')) $('btnCreateProject').onclick = createProjectFromPrompt;
-if ($('btnOpenProjectChat')) $('btnOpenProjectChat').onclick = () => document.querySelector('[data-tab=chat]')?.click();
+if ($('btnNewProject')) $('btnNewProject').onclick = () => openProjectForm();
+if ($('btnCreateProject')) $('btnCreateProject').onclick = () => openProjectForm();
+if ($('btnOpenProjectChat')) $('btnOpenProjectChat').onclick = () => document.querySelector('[data-tab=agent]')?.click();
 
 document.querySelectorAll('.mode-btn').forEach(btn => {
   btn.onclick = () => {
     if (isStreaming) return;
-    activeRunMode = btn.dataset.mode || 'chat';
+    activeRunMode = isAgentWorkspace() ? 'task' : (btn.dataset.mode || 'chat');
     document.querySelectorAll('.mode-btn').forEach(x => x.classList.toggle('active', x === btn));
-    inputEl.placeholder = activeRunMode === 'task' ? '描述要在当前项目中执行的任务...' : '输入消息...';
+    inputEl.placeholder = isAgentWorkspace() ? '描述要在当前项目中执行的任务...' : '输入消息...';
   };
 });
 
@@ -516,10 +722,24 @@ function saveSessions(s) { sessionsCache = s; persistSessions(); }
 function getActiveId() { return activeIdCache; }
 function setActiveId(id) { activeIdCache = id; persistActiveId(); }
 
+function getSessionKind(session) {
+  if (session?.kind === CHAT_SCOPE || session?.kind === AGENT_SCOPE) return session.kind;
+  return session?.projectId ? AGENT_SCOPE : CHAT_SCOPE;
+}
+
 function createSession() {
   const s = getSessions();
   const id = 's_' + Date.now();
-  s[id] = { id, title: '新会话', projectId: getActiveProjectId(), mode: 'chat', status: 'idle', messages: [], created: Date.now() };
+  s[id] = {
+    id,
+    title: isAgentWorkspace() ? '新 Agent 会话' : '新对话',
+    kind: activeWorkspace,
+    projectId: isAgentWorkspace() ? getActiveProjectId() : null,
+    mode: isAgentWorkspace() ? 'task' : 'chat',
+    status: 'idle',
+    messages: [],
+    created: Date.now(),
+  };
   saveSessions(s); setActiveId(id);
   renderSessionList(); renderMessages();
   return id;
@@ -529,7 +749,7 @@ function deleteSession(id) {
   const s = getSessions();
   delete s[id]; saveSessions(s);
   if (getActiveId() === id) {
-    const keys = getProjectSessionIds();
+    const keys = getVisibleSessionIds();
     setActiveId(keys.length ? keys[0] : null);
   }
   renderSessionList(); renderMessages();
@@ -555,7 +775,7 @@ function renderSessionList() {
   const list = $('sessionList');
   const sessions = getSessions();
   const activeId = getActiveId();
-  const keys = getProjectSessionIds();
+  const keys = getVisibleSessionIds();
 
   list.innerHTML = '';
   if (keys.length === 0) {
@@ -603,6 +823,44 @@ function formatTime(ts) {
   return (d.getMonth() + 1) + '/' + d.getDate();
 }
 
+function formatClock(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return '';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 10000) return `${(ms / 1000).toFixed(1)}s`;
+  return `${Math.round(ms / 1000)}s`;
+}
+
+function getMessageActorLabel(role, meta = {}) {
+  if (role === 'user') return meta.kind === AGENT_SCOPE ? '用户任务' : '用户消息';
+  return meta.kind === AGENT_SCOPE ? 'Agent 回复' : 'AI 回复';
+}
+
+function getMessageMetaText(role, meta = {}) {
+  const parts = [];
+  const time = formatClock(meta.created);
+  const label = getMessageActorLabel(role, meta);
+  if (time) parts.push(`${label} ${time}`);
+  else parts.push(label);
+  if (role !== 'user') {
+    if (Number.isFinite(meta.thinkingMs)) parts.push(`思考耗时 ${formatDuration(meta.thinkingMs)}`);
+    else if (meta.pending) parts.push('思考中');
+  }
+  return parts.join(' · ');
+}
+
+function setBubbleMeta(bubble, role, meta = {}) {
+  const metaEl = bubble?.parentElement?.querySelector('.msg-meta');
+  if (!metaEl) return;
+  const text = getMessageMetaText(role, meta);
+  metaEl.textContent = text;
+  metaEl.classList.toggle('empty', !text);
+}
+
 $('btnNewSession').onclick = () => { if (isStreaming) return; createSession(); $('input').focus(); };
 
 $('btnClearAll').onclick = () => {
@@ -643,15 +901,28 @@ function refreshChat() {
   updateModelBadge();
   const cfg = getConfig();
   const requiresApiKey = cfg && !isCliConfig(cfg);
-  if (!cfg || !cfg.apiUrl || (requiresApiKey && !cfg.apiKey) || !cfg.modelName) {
-    messagesEl.innerHTML = '<div class="no-config"><div class="icon">&#9670;</div><p>请先配置 Pi CLI 或模型接口</p><button onclick="document.querySelectorAll(\'[data-tab=config]\').forEach(x=>x.click())">前往配置</button></div>';
+  const invalidConfig = !cfg
+    || (isAgentWorkspace() ? !isCliConfig(cfg) : isCliConfig(cfg))
+    || (!isCliConfig(cfg) && !cfg.apiUrl)
+    || (requiresApiKey && !cfg.apiKey)
+    || !cfg.modelName;
+  if (invalidConfig) {
+    const missing = isAgentWorkspace() ? '请先配置 Agent 使用的 Pi CLI' : '请先配置对话使用的 API 模型';
+    messagesEl.innerHTML = `<div class="no-config"><div class="icon">&#9670;</div><p>${missing}</p><button id="emptyConfigBtn">前往配置</button></div>`;
+    const emptyConfigBtn = $('emptyConfigBtn');
+    if (emptyConfigBtn) emptyConfigBtn.onclick = () => {
+      document.querySelector('[data-tab=config]')?.click();
+      setConfigScope(isAgentWorkspace() ? AGENT_SCOPE : CHAT_SCOPE);
+    };
     inputArea.style.display = 'none';
+    renderProjectControls();
+    renderSessionList();
     return;
   }
   const sessions = getSessions();
-  const projectSessionIds = getProjectSessionIds();
-  if (projectSessionIds.length === 0) createSession();
-  else if (!getActiveId() || !sessions[getActiveId()] || (sessions[getActiveId()].projectId || 'default') !== getActiveProjectId()) setActiveId(projectSessionIds[0]);
+  const visibleSessionIds = getVisibleSessionIds();
+  if (visibleSessionIds.length === 0) createSession();
+  else if (!getActiveId() || !sessions[getActiveId()] || !visibleSessionIds.includes(getActiveId())) setActiveId(visibleSessionIds[0]);
 
   inputArea.style.display = '';
   renderProjectControls();
@@ -665,18 +936,23 @@ function renderMessages() {
     messagesEl.innerHTML = `
       <div class="welcome">
         <div class="icon">&#9670;</div>
-        <h2>开始 <em>对话</em></h2>
-        <p>输入任意消息与大模型交流</p>
+        <h2>开始 <em>${isAgentWorkspace() ? 'Agent' : '对话'}</em></h2>
+        <p>${isAgentWorkspace() ? '在当前项目目录里交给 Pi Agent 处理' : '输入任意消息与大模型交流'}</p>
         <div class="tips">
-          <div class="tip" onclick="useTip(this)">解释量子计算</div>
-          <div class="tip" onclick="useTip(this)">写一首关于春天的诗</div>
-          <div class="tip" onclick="useTip(this)">用 Python 实现快速排序</div>
-          <div class="tip" onclick="useTip(this)">推荐几本科幻小说</div>
+          ${isAgentWorkspace()
+            ? '<div class="tip" onclick="useTip(this)">阅读项目结构并给出改进建议</div><div class="tip" onclick="useTip(this)">帮我修复当前测试失败</div><div class="tip" onclick="useTip(this)">实现一个小功能并说明改动</div><div class="tip" onclick="useTip(this)">检查最近的代码风险</div>'
+            : '<div class="tip" onclick="useTip(this)">解释量子计算</div><div class="tip" onclick="useTip(this)">写一首关于春天的诗</div><div class="tip" onclick="useTip(this)">用 Python 实现快速排序</div><div class="tip" onclick="useTip(this)">推荐几本科幻小说</div>'}
         </div>
       </div>`;
     return;
   }
-  session.messages.forEach(m => appendBubble(m.role, m.content, false));
+  const sessionKind = getSessionKind(session);
+  session.messages.forEach(m => appendBubble(m.role, m.content, false, {
+    created: m.created,
+    thinkingMs: m.thinkingMs,
+    kind: sessionKind,
+    projectId: session.projectId,
+  }));
   scrollToBottom();
 }
 
@@ -920,7 +1196,103 @@ function applyMathFallback(element) {
   });
 }
 
-function setBubbleContent(bubble, role, content, renderRich = role !== 'user', renderMath = true) {
+function normalizeProjectImagePath(value) {
+  let path = (value || '').trim();
+  path = path.replace(/^[*`"'“”‘’（(【\[]+|[*`"'“”‘’。.,，、；;：:！!？?）)】\]]+$/g, '');
+  path = path.split(/[?#]/)[0].replace(/\\/g, '/').trim();
+  if (!path || path.startsWith('/')) return '';
+  if (/^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:\//i.test(path)) return '';
+  if (path.includes('\0')) return '';
+  const extension = path.split('.').pop()?.toLowerCase();
+  if (!IMAGE_EXTENSIONS.includes(extension)) return '';
+  return path;
+}
+
+function projectImageUrl(path, projectId) {
+  return `/api/project-image?projectId=${encodeURIComponent(projectId || '')}&path=${encodeURIComponent(path)}`;
+}
+
+function extractProjectImagePaths(content) {
+  const seen = new Set();
+  const paths = [];
+  const add = value => {
+    const path = normalizeProjectImagePath(value);
+    if (!path || seen.has(path)) return;
+    const pathKey = path.toLowerCase();
+    if (!/^[a-z]:\//i.test(path) && paths.some(existing => existing.toLowerCase().endsWith(`/${pathKey}`))) return;
+    seen.add(path);
+    paths.push(path);
+  };
+
+  const markdownPattern = /!?\[[^\]]*]\(([^)\s]+(?:\s+[^)]*)?)\)/g;
+  for (const match of (content || '').matchAll(markdownPattern)) add(match[1]);
+
+  const absoluteWindowsPattern = new RegExp(`[A-Za-z]:[\\\\/][^\\s<>"'“”‘’|]+?\\.(${IMAGE_EXT_PATTERN})`, 'gi');
+  for (const match of (content || '').matchAll(absoluteWindowsPattern)) add(match[0]);
+
+  const filenamePattern = new RegExp(`(?:[A-Za-z]:[\\\\/])?\\.?\\/?[^\\s*<>"'“”‘’|：:，。；;！!？?（）()【】\\[\\]]+?\\.(${IMAGE_EXT_PATTERN})`, 'gi');
+  for (const match of (content || '').matchAll(filenamePattern)) add(match[0]);
+
+  return paths;
+}
+
+function appendProjectImagePreviews(bubble, content, meta = {}) {
+  if (meta.kind !== AGENT_SCOPE || !meta.projectId) return;
+
+  const renderedPaths = new Set();
+  bubble.querySelectorAll('img').forEach(img => {
+    const path = normalizeProjectImagePath(img.getAttribute('src'));
+    if (!path) return;
+    const src = projectImageUrl(path, meta.projectId);
+    img.src = src;
+    img.classList.add('project-inline-image');
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    img.dataset.projectImagePath = path;
+    if (!img.closest('a')) {
+      const link = document.createElement('a');
+      link.href = src;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      img.parentNode.insertBefore(link, img);
+      link.appendChild(img);
+    }
+    renderedPaths.add(path);
+  });
+
+  const paths = extractProjectImagePaths(content).filter(path => !renderedPaths.has(path));
+  if (!paths.length) return;
+
+  const gallery = document.createElement('div');
+  gallery.className = 'project-image-gallery';
+  paths.forEach(path => {
+    const figure = document.createElement('figure');
+    figure.className = 'project-image-card';
+
+    const image = document.createElement('img');
+    image.src = projectImageUrl(path, meta.projectId);
+    image.alt = path;
+    image.loading = 'lazy';
+    image.decoding = 'async';
+    image.onerror = () => figure.classList.add('load-error');
+
+    const link = document.createElement('a');
+    link.href = image.src;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.appendChild(image);
+
+    const caption = document.createElement('figcaption');
+    caption.textContent = path;
+
+    figure.appendChild(link);
+    figure.appendChild(caption);
+    gallery.appendChild(figure);
+  });
+  bubble.appendChild(gallery);
+}
+
+function setBubbleContent(bubble, role, content, renderRich = role !== 'user', renderMath = true, meta = {}) {
   if (role === 'user' || !renderRich) {
     bubble.textContent = content;
     return;
@@ -928,9 +1300,10 @@ function setBubbleContent(bubble, role, content, renderRich = role !== 'user', r
   bubble.innerHTML = renderMarkdown(content);
   if (renderMath && window.MathJax?.typesetPromise) typesetMath(bubble);
   else applyMathFallback(bubble);
+  appendProjectImagePreviews(bubble, content, meta);
 }
 
-function createRichStreamRenderer(bubble) {
+function createRichStreamRenderer(bubble, meta = {}) {
   let lastRender = 0;
   let pending = false;
   let pendingTimer = null;
@@ -951,19 +1324,19 @@ function createRichStreamRenderer(bubble) {
           pending = false;
           pendingTimer = null;
           lastRender = Date.now();
-          setBubbleContent(bubble, 'assistant', latestContent, true, false);
+          setBubbleContent(bubble, 'assistant', latestContent, true, false, meta);
           scrollToBottom();
         }, 220);
       }
       return;
     }
     lastRender = now;
-    setBubbleContent(bubble, 'assistant', content, true, force);
+    setBubbleContent(bubble, 'assistant', content, true, force, meta);
     scrollToBottom();
   };
 }
 
-function appendBubble(role, content, animate = true) {
+function appendBubble(role, content, animate = true, meta = {}) {
   const welcome = messagesEl.querySelector('.welcome');
   if (welcome) welcome.remove();
 
@@ -977,10 +1350,20 @@ function appendBubble(role, content, animate = true) {
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
-  setBubbleContent(bubble, role, content);
+  setBubbleContent(bubble, role, content, role !== 'user', true, meta);
 
+  const contentWrap = document.createElement('div');
+  contentWrap.className = 'msg-content';
+
+  const metaEl = document.createElement('div');
+  metaEl.className = 'msg-meta';
+  metaEl.textContent = getMessageMetaText(role, meta);
+  metaEl.classList.toggle('empty', !metaEl.textContent);
+
+  contentWrap.appendChild(bubble);
+  contentWrap.appendChild(metaEl);
   div.appendChild(avatar);
-  div.appendChild(bubble);
+  div.appendChild(contentWrap);
   messagesEl.appendChild(div);
   scrollToBottom();
   return bubble;
@@ -1037,7 +1420,7 @@ async function readCliStream(prompt, messages, onDelta) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       projectId: getActiveProjectId(),
-      mode: activeRunMode,
+      mode: isAgentWorkspace() ? 'task' : activeRunMode,
       prompt,
       messages,
     }),
@@ -1066,52 +1449,82 @@ async function sendMessage() {
   const text = inputEl.value.trim();
   if (!text || isStreaming) return;
   const cfg = getConfig();
-  if (!cfg) { document.querySelectorAll('[data-tab=config]').forEach(x => x.click()); return; }
+  if (!cfg || (isAgentWorkspace() ? !isCliConfig(cfg) : isCliConfig(cfg))) {
+    document.querySelector('[data-tab=config]')?.click();
+    setConfigScope(isAgentWorkspace() ? AGENT_SCOPE : CHAT_SCOPE);
+    return;
+  }
 
   let session = getActiveSession();
   if (!session) { createSession(); session = getActiveSession(); }
-  session.projectId = session.projectId || getActiveProjectId();
-  session.mode = activeRunMode;
-  session.status = activeRunMode === 'task' ? 'running' : 'idle';
+  session.kind = activeWorkspace;
+  session.projectId = isAgentWorkspace() ? (session.projectId || getActiveProjectId()) : null;
+  session.mode = isAgentWorkspace() ? 'task' : 'chat';
+  session.status = isAgentWorkspace() ? 'running' : 'idle';
+  const responseKind = session.kind;
+  const responseProjectId = session.projectId;
 
-  session.messages.push({ role: 'user', content: text });
+  const userCreated = Date.now();
+  session.messages.push({ role: 'user', content: text, created: userCreated });
 
   if (session.messages.filter(m => m.role === 'user').length === 1) {
     const title = text.length > 30 ? text.slice(0, 30) + '...' : text;
-    updateActiveSession({ title, projectId: session.projectId, mode: session.mode, status: session.status, messages: session.messages, created: session.created });
+    updateActiveSession({ title, kind: session.kind, projectId: session.projectId, mode: session.mode, status: session.status, messages: session.messages, created: session.created });
     renderSessionList();
   } else {
-    updateActiveSession({ projectId: session.projectId, mode: session.mode, status: session.status, messages: session.messages });
+    updateActiveSession({ kind: session.kind, projectId: session.projectId, mode: session.mode, status: session.status, messages: session.messages });
   }
 
-  appendBubble('user', text);
+  appendBubble('user', text, true, { created: userCreated, kind: responseKind, projectId: responseProjectId });
   inputEl.value = ''; inputEl.style.height = 'auto'; inputEl.focus();
 
   isStreaming = true;
   sendBtn.innerHTML = '&#9632;';
   sendBtn.classList.add('stop'); sendBtn.title = '停止';
 
-  const botBubble = appendBubble('assistant', '');
-  botBubble.classList.add('streaming');
-  const renderBotStream = createRichStreamRenderer(botBubble);
+  const thinkingText = isAgentWorkspace() ? 'Agent 正在执行任务' : '模型正在思考';
+  const responseStarted = Date.now();
+  let firstDeltaAt = null;
+  const responseMeta = { created: responseStarted, kind: responseKind, projectId: responseProjectId, pending: true };
+  const botBubble = appendBubble('assistant', thinkingText, true, responseMeta);
+  botBubble.classList.add('streaming', 'thinking');
+  const renderBotStream = createRichStreamRenderer(botBubble, responseMeta);
   let fullContent = '';
 
   try {
     abortController = new AbortController();
     const messages = session.messages.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
-    const onDelta = delta => { fullContent += delta; renderBotStream(fullContent); };
-    if (isCliConfig(cfg)) await readCliStream(text, messages, onDelta);
+    const onDelta = delta => {
+      if (!fullContent) {
+        firstDeltaAt = Date.now();
+        botBubble.classList.remove('thinking');
+        setBubbleMeta(botBubble, 'assistant', { created: responseStarted, thinkingMs: firstDeltaAt - responseStarted, kind: responseKind, projectId: responseProjectId });
+      }
+      fullContent += delta;
+      renderBotStream(fullContent);
+    };
+    if (isAgentWorkspace()) await readCliStream(text, messages, onDelta);
     else await readOpenAIStream(cfg, messages, onDelta);
   } catch (err) {
     if (err.name === 'AbortError') { fullContent += '\n\n[已停止]'; }
-    else { botBubble.classList.remove('streaming'); botBubble.parentElement.className = 'msg error bot'; botBubble.textContent = `请求失败: ${err.message}`; }
+    else {
+      botBubble.classList.remove('streaming', 'thinking');
+      botBubble.closest('.msg')?.classList.add('error');
+      botBubble.textContent = `请求失败: ${err.message}`;
+    }
   }
 
-  botBubble.classList.remove('streaming');
+  botBubble.classList.remove('streaming', 'thinking');
   if (fullContent) {
+    const assistantCreated = firstDeltaAt || Date.now();
+    const thinkingMs = Math.max(0, assistantCreated - responseStarted);
     renderBotStream(fullContent, true);
+    setBubbleMeta(botBubble, 'assistant', { created: assistantCreated, thinkingMs, kind: responseKind, projectId: responseProjectId });
     session = getActiveSession();
-    if (session) { session.messages.push({ role: 'assistant', content: fullContent }); updateActiveSession({ messages: session.messages, status: 'idle' }); }
+    if (session) { session.messages.push({ role: 'assistant', content: fullContent, created: assistantCreated, thinkingMs }); updateActiveSession({ messages: session.messages, status: 'idle' }); }
+  } else if (!botBubble.textContent.trim() || botBubble.textContent.trim() === thinkingText) {
+    botBubble.textContent = '已完成，但没有返回内容。';
+    setBubbleMeta(botBubble, 'assistant', { created: Date.now(), thinkingMs: Date.now() - responseStarted, kind: responseKind, projectId: responseProjectId });
   }
 
   isStreaming = false;
@@ -1134,7 +1547,9 @@ async function initApp() {
     await loadDatabaseState();
   }
   ensurePiCliDefaultConfig();
-  loadConfig(); updateModelBadge(); renderProjectControls(); renderProjects(); refreshChat();
+  renderPresets();
+  setConfigScope(CHAT_SCOPE);
+  updateModelBadge(); renderProjectControls(); renderProjects(); refreshChat();
 }
 
 initApp();

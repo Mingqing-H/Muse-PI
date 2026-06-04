@@ -5,11 +5,13 @@ from contextlib import contextmanager
 from pathlib import Path
 import argparse
 import json
+import mimetypes
 import shlex
 import shutil
 import sqlite3
 import subprocess
 import time
+from urllib.parse import parse_qs, urlparse
 import webbrowser
 import uuid
 
@@ -21,7 +23,8 @@ DB_PATH = DATA_DIR / "llm_studio.sqlite"
 HOST = "127.0.0.1"
 PORT = 8765
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 PRESET_URLS = {
     "MiMo": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
@@ -144,6 +147,7 @@ def create_schema(conn):
         CREATE TABLE IF NOT EXISTS chat_sessions (
             id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'chat',
             project_id TEXT,
             mode TEXT NOT NULL DEFAULT 'chat',
             status TEXT NOT NULL DEFAULT 'idle',
@@ -158,6 +162,7 @@ def create_schema(conn):
             role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
             content TEXT NOT NULL,
             created_at INTEGER NOT NULL,
+            thinking_ms INTEGER,
             FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
             UNIQUE (session_id, position)
         );
@@ -168,8 +173,10 @@ def create_schema(conn):
         """
     )
     ensure_column(conn, "chat_sessions", "project_id", "TEXT")
+    ensure_column(conn, "chat_sessions", "kind", "TEXT NOT NULL DEFAULT 'chat'")
     ensure_column(conn, "chat_sessions", "mode", "TEXT NOT NULL DEFAULT 'chat'")
     ensure_column(conn, "chat_sessions", "status", "TEXT NOT NULL DEFAULT 'idle'")
+    ensure_column(conn, "chat_messages", "thinking_ms", "INTEGER")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_updated
@@ -231,18 +238,33 @@ def delete_meta(conn, *keys):
 
 def normalize_config_store(config):
     if not config:
-        return {"activeProvider": None, "providers": {}}
+        return {"activeChatProvider": None, "activeAgentProvider": None, "providers": {}}
 
     if isinstance(config, dict) and isinstance(config.get("providers"), dict):
+        providers = config.get("providers") or {}
+        active_provider = config.get("activeProvider")
+        active_chat_provider = config.get("activeChatProvider")
+        active_agent_provider = config.get("activeAgentProvider")
+        if not active_chat_provider and active_provider and active_provider != "Pi CLI":
+            active_chat_provider = active_provider
+        if not active_agent_provider and active_provider == "Pi CLI":
+            active_agent_provider = active_provider
+        if not active_chat_provider:
+            active_chat_provider = next((name for name in providers if name != "Pi CLI"), None)
+        if not active_agent_provider:
+            active_agent_provider = "Pi CLI" if "Pi CLI" in providers else None
         return {
-            "activeProvider": config.get("activeProvider"),
-            "providers": config.get("providers") or {},
+            "activeChatProvider": active_chat_provider,
+            "activeAgentProvider": active_agent_provider,
+            "providers": providers,
         }
 
     if isinstance(config, dict) and any(config.get(k) for k in ("apiUrl", "apiKey", "modelName")):
         provider = infer_provider(config)
+        is_agent_provider = provider == "Pi CLI"
         return {
-            "activeProvider": provider,
+            "activeChatProvider": None if is_agent_provider else provider,
+            "activeAgentProvider": provider if is_agent_provider else None,
             "providers": {
                 provider: {
                     "provider": provider,
@@ -253,15 +275,16 @@ def normalize_config_store(config):
             },
         }
 
-    return {"activeProvider": None, "providers": {}}
+    return {"activeChatProvider": None, "activeAgentProvider": None, "providers": {}}
 
 
 def save_config(conn, config):
     store = normalize_config_store(config)
     timestamp = now_ms()
 
-    if store["activeProvider"]:
-        set_meta(conn, "active_provider", store["activeProvider"])
+    set_meta(conn, "active_chat_provider", store.get("activeChatProvider"))
+    set_meta(conn, "active_agent_provider", store.get("activeAgentProvider"))
+    set_meta(conn, "active_provider", store.get("activeChatProvider") or store.get("activeAgentProvider"))
 
     if isinstance(config, dict) and isinstance(config.get("providers"), dict):
         incoming_providers = set(store["providers"].keys())
@@ -315,15 +338,27 @@ def load_config(conn):
         }
         for row in rows
     }
-    active_provider = get_meta(conn, "active_provider")
-    if active_provider not in providers:
-        active_provider = next(iter(providers), None)
-    return {"activeProvider": active_provider, "providers": providers} if providers else None
+    active_chat_provider = get_meta(conn, "active_chat_provider")
+    active_agent_provider = get_meta(conn, "active_agent_provider")
+    legacy_active_provider = get_meta(conn, "active_provider")
+    if not active_chat_provider and legacy_active_provider and legacy_active_provider != "Pi CLI":
+        active_chat_provider = legacy_active_provider
+    if not active_agent_provider and legacy_active_provider == "Pi CLI":
+        active_agent_provider = legacy_active_provider
+    if active_chat_provider not in providers:
+        active_chat_provider = next((name for name in providers if name != "Pi CLI"), None)
+    if active_agent_provider not in providers:
+        active_agent_provider = "Pi CLI" if "Pi CLI" in providers else None
+    return {
+        "activeChatProvider": active_chat_provider,
+        "activeAgentProvider": active_agent_provider,
+        "providers": providers,
+    } if providers else None
 
 
 def clear_config(conn):
     conn.execute("DELETE FROM model_provider_configs")
-    delete_meta(conn, "active_provider")
+    delete_meta(conn, "active_provider", "active_chat_provider", "active_agent_provider")
 
 
 def default_project():
@@ -411,12 +446,13 @@ def save_sessions(conn, sessions):
         conn.execute(
             """
             INSERT INTO chat_sessions
-                (id, title, project_id, mode, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (id, title, kind, project_id, mode, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.get("id") or session_id,
                 session.get("title") or "New chat",
+                session.get("kind") or ("agent" if session.get("projectId") else "chat"),
                 session.get("projectId"),
                 session.get("mode") or "chat",
                 session.get("status") or "idle",
@@ -431,15 +467,16 @@ def save_sessions(conn, sessions):
             conn.execute(
                 """
                 INSERT INTO chat_messages
-                    (session_id, position, role, content, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (session_id, position, role, content, created_at, thinking_ms)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session.get("id") or session_id,
                     position,
                     role,
                     message.get("content") or "",
-                    created_at + position,
+                    int(message.get("created") or created_at + position),
+                    message.get("thinkingMs") if message.get("thinkingMs") is not None else None,
                 ),
             )
 
@@ -448,7 +485,7 @@ def load_sessions(conn):
     sessions = {}
     session_rows = conn.execute(
         """
-        SELECT id, title, project_id, mode, status, created_at
+        SELECT id, title, kind, project_id, mode, status, created_at
         FROM chat_sessions
         ORDER BY created_at DESC
         """
@@ -456,7 +493,7 @@ def load_sessions(conn):
     for row in session_rows:
         messages = conn.execute(
             """
-            SELECT role, content
+            SELECT role, content, created_at, thinking_ms
             FROM chat_messages
             WHERE session_id = ?
             ORDER BY position
@@ -466,12 +503,18 @@ def load_sessions(conn):
         sessions[row["id"]] = {
             "id": row["id"],
             "title": row["title"],
+            "kind": "agent" if row["project_id"] else (row["kind"] or "chat"),
             "projectId": row["project_id"],
             "mode": row["mode"] or "chat",
             "status": row["status"] or "idle",
             "created": row["created_at"],
             "messages": [
-                {"role": message["role"], "content": message["content"]}
+                {
+                    "role": message["role"],
+                    "content": message["content"],
+                    "created": message["created_at"],
+                    "thinkingMs": message["thinking_ms"],
+                }
                 for message in messages
             ],
         }
@@ -540,6 +583,29 @@ def resolve_project_cwd(project):
     except OSError:
         pass
     return str(ROOT)
+
+
+def resolve_project_image_path(project, image_path):
+    raw_path = (image_path or "").strip().strip("\"'`")
+    if not raw_path:
+        raise ValueError("图片路径为空。")
+
+    root = Path(resolve_project_cwd(project)).resolve()
+    candidate_input = Path(raw_path.replace("\\", "/"))
+
+    if candidate_input.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise ValueError("仅支持图片文件。")
+
+    candidate = candidate_input.resolve() if (candidate_input.is_absolute() or candidate_input.drive) else (root / candidate_input).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("图片路径不能超出项目文件夹。") from exc
+
+    if not candidate.exists() or not candidate.is_file():
+        raise FileNotFoundError("图片不存在。")
+
+    return candidate
 
 
 def stream_local_cli(command, prompt, cwd):
@@ -632,7 +698,7 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
     def stream_cli_chat(self, payload):
         with db_connection() as conn:
             config = load_config(conn) or {}
-            provider = config.get("activeProvider")
+            provider = config.get("activeAgentProvider")
             provider_config = (config.get("providers") or {}).get(provider) or {}
             project = load_projects(conn).get(payload.get("projectId")) or active_project(conn)
 
@@ -651,11 +717,42 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         cwd = resolve_project_cwd(project)
         self.stream_ndjson(stream_local_cli(command, prompt, cwd))
 
+    def send_project_image(self):
+        parsed = urlparse(self.path)
+        params = parse_qs(parsed.query)
+        project_id = (params.get("projectId") or [""])[0]
+        image_path = (params.get("path") or [""])[0]
+
+        try:
+            with db_connection() as conn:
+                project = load_projects(conn).get(project_id) or active_project(conn)
+            resolved = resolve_project_image_path(project, image_path)
+            body = resolved.read_bytes()
+        except FileNotFoundError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=404)
+            return
+        except (OSError, ValueError) as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        content_type = mimetypes.guess_type(str(resolved))[0] or "application/octet-stream"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
+        parsed_path = urlparse(self.path).path
+        if parsed_path == "/api/project-image":
+            self.send_project_image()
+            return
+
         if self.path == "/api/state":
             with db_connection() as conn:
                 config = load_config(conn)
-                provider = (config or {}).get("activeProvider")
+                provider = (config or {}).get("activeAgentProvider")
                 provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
                 projects = load_projects(conn)
                 active_project_id = get_meta(conn, "active_project_id")
@@ -676,7 +773,7 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         if self.path == "/api/pi-cli-info":
             with db_connection() as conn:
                 config = load_config(conn)
-                provider = (config or {}).get("activeProvider")
+                provider = (config or {}).get("activeAgentProvider")
                 provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
                 self.send_json(inspect_pi_cli(provider_config.get("apiUrl") if provider == "Pi CLI" else ""))
             return

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LLM Studio</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Instrument+Sans:wght@400;500;600&family=Noto+Serif+SC:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles/main.css?v=20260604-config-grid">
+<link rel="stylesheet" href="styles/main.css?v=20260604-project-images-v3">
 </head>
 <body>
 
@@ -14,10 +14,11 @@
   <div class="tabs">
     <button class="tab-btn" data-tab="projects">项目</button>
     <button class="tab-btn active" data-tab="chat">对话</button>
+    <button class="tab-btn" data-tab="agent">Agent</button>
     <button class="tab-btn" data-tab="config">配置</button>
   </div>
   <div class="topbar-right">
-    <span class="project-badge" id="projectBadge">本地工作区</span>
+    <span class="project-badge" id="projectBadge">对话无需项目</span>
     <span class="model-badge empty" id="modelBadge">未配置</span>
   </div>
 </div>
@@ -25,12 +26,12 @@
 <div class="view" id="projectsView">
   <div class="projects-layout">
     <div class="projects-header">
-      <h2>项目 <em>工作台</em></h2>
-      <p>为不同代码目录建立独立上下文、会话和任务记录。</p>
+      <h2>Agent <em>项目</em></h2>
+      <p>为 Pi Agent 指定本地项目文件夹，项目内的会话和任务记录会按目录分开。</p>
     </div>
     <div class="projects-toolbar">
       <button class="btn btn-primary" id="btnCreateProject">新建项目</button>
-      <button class="btn btn-secondary" id="btnOpenProjectChat">进入对话</button>
+      <button class="btn btn-secondary" id="btnOpenProjectChat">进入 Agent</button>
     </div>
     <div class="project-grid" id="projectGrid"></div>
   </div>
@@ -39,7 +40,7 @@
 <div class="view active" id="chatView">
   <div class="chat-layout">
     <div class="sidebar" id="sidebar">
-      <div class="project-switcher">
+      <div class="project-switcher" id="projectSwitcher">
         <label>当前项目</label>
         <div class="project-select-row">
           <select id="projectSelect"></select>
@@ -47,7 +48,7 @@
         </div>
       </div>
       <div class="sidebar-header">
-        <button class="btn-new" id="btnNewSession">+ 新建会话</button>
+        <button class="btn-new" id="btnNewSession">+ 新建对话</button>
         <button id="btnClearAll">全部清空</button>
       </div>
       <div class="session-list" id="sessionList"></div>
@@ -56,9 +57,8 @@
       <div class="messages" id="messages"></div>
       <div class="input-area" id="inputArea" style="display:none">
         <div class="runbar">
-          <div class="mode-switch" id="modeSwitch">
-            <button class="mode-btn active" data-mode="chat">对话</button>
-            <button class="mode-btn" data-mode="task">任务</button>
+          <div class="agent-task-mode" id="modeSwitch">
+            <span>任务</span>
           </div>
           <span id="activeProjectHint"></span>
         </div>
@@ -75,10 +75,14 @@
 <div class="view" id="configView">
   <div class="config-container">
     <div class="config-header">
-      <h2>模型 <em>配置</em></h2>
-      <p>选择或自定义大模型接口</p>
+      <h2 id="configHeaderTitle">对话 <em>配置</em></h2>
+      <p id="configHeaderText">配置用于普通对话的 API 模型</p>
     </div>
     <div class="card">
+      <div class="config-scope-tabs">
+        <button class="config-scope-btn active" data-scope="chat">对话模型</button>
+        <button class="config-scope-btn" data-scope="agent">Agent 模型</button>
+      </div>
       <div class="presets" id="presets"></div>
       <div class="field">
         <label id="apiUrlLabel">API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span></label>
@@ -123,6 +127,6 @@ window.MathJax = {
 <script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
-<script defer src="scripts/app.js?v=20260604-provider-configs"></script>
+<script defer src="scripts/app.js?v=20260604-project-images-v3"></script>
 </body>
 </html>
