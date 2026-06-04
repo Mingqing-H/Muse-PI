@@ -925,21 +925,127 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         self.stream_ndjson(stream_pi_cli(command, prompt, cwd, session_path))
 
     def handle_pick_folder(self):
-        """打开系统原生文件夹选择对话框，返回选中的路径。"""
-        import tkinter as tk
-        from tkinter import filedialog
+        """打开 Windows 原生文件夹选择对话框（IFileDialog），返回选中的路径。"""
         try:
-            root = tk.Tk()
-            root.withdraw()
-            root.attributes('-topmost', True)
-            folder = filedialog.askdirectory(parent=root, title="选择项目文件夹")
-            root.destroy()
-            if folder:
-                self.send_json({"ok": True, "path": folder})
+            result = self._pick_folder_win32()
+            if result:
+                self.send_json({"ok": True, "path": result})
             else:
                 self.send_json({"ok": False, "path": ""})
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=500)
+
+    @staticmethod
+    def _pick_folder_win32():
+        """使用 ctypes 调用 Windows IFileDialog COM 接口打开现代文件夹选择器。"""
+        import ctypes
+        import ctypes.wintypes as wt
+
+        ole32 = ctypes.windll.ole32
+        ole32.CoInitializeEx(None, 0)  # COINIT_APARTMENTTHREADED
+
+        try:
+            CLSID_FileOpenDialog = (
+                0xDC1C5A9C, 0xE88A, 0x4DDE,
+                (0xA5, 0xA1, 0x60, 0xF8, 0x2A, 0x20, 0xAE, 0xF7)
+            )
+            IID_IFileDialog = (
+                0x42F85136, 0xDB7E, 0x439C,
+                (0x85, 0xF1, 0xE4, 0x07, 0x5D, 0x13, 0x5F, 0xC8)
+            )
+
+            # FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST
+            FOS_PICKFOLDERS = 0x00000020
+            FOS_FORCEFILESYSTEM = 0x00000040
+            FOS_PATHMUSTEXIST = 0x00000800
+
+            class GUID(ctypes.Structure):
+                _fields_ = [
+                    ("Data1", ctypes.c_ulong),
+                    ("Data2", ctypes.c_ushort),
+                    ("Data3", ctypes.c_ushort),
+                    ("Data4", ctypes.c_ubyte * 8),
+                ]
+
+            def make_guid(data):
+                g = GUID()
+                g.Data1, g.Data2, g.Data3 = data[0], data[1], data[2]
+                for i, v in enumerate(data[3]):
+                    g.Data4[i] = v
+                return g
+
+            pfd = ctypes.c_void_p()
+            guid_fod = make_guid(CLSID_FileOpenDialog)
+            guid_ifd = make_guid(IID_IFileDialog)
+            hr = ole32.CoCreateInstance(
+                ctypes.byref(guid_fod), None, 1,  # CLSCTX_INPROC_SERVER
+                ctypes.byref(guid_ifd), ctypes.byref(pfd)
+            )
+            if hr < 0:
+                raise ctypes.COMError(hr, None, None)
+
+            # IFileDialog vtable layout (inherits IModalWindow -> IUnknown):
+            # IUnknown: 0=QueryInterface, 1=AddRef, 2=Release
+            # IModalWindow: 3=Show
+            # IFileDialog: 4=SetFileTypes, ..., 9=SetOptions, ..., 16=SetTitle, ..., 19=GetResult
+            vtable = ctypes.cast(
+                ctypes.cast(pfd, ctypes.POINTER(ctypes.c_void_p)).contents.value,
+                ctypes.POINTER(ctypes.c_void_p)
+            )
+
+            # SetOptions (index 9)
+            set_options = ctypes.WINFUNCTYPE(
+                ctypes.c_long, ctypes.c_void_p, ctypes.c_ulong
+            )(vtable[9])
+            opts = FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST
+            hr = set_options(pfd, opts)
+            if hr < 0:
+                raise ctypes.COMError(hr, None, None)
+
+            # SetTitle (index 16)
+            set_title = ctypes.WINFUNCTYPE(
+                ctypes.c_long, ctypes.c_void_p, ctypes.c_wchar_p
+            )(vtable[16])
+            set_title(pfd, "选择项目文件夹")
+
+            # Show(NULL) (index 3)
+            show = ctypes.WINFUNCTYPE(
+                ctypes.c_long, ctypes.c_void_p, wt.HWND
+            )(vtable[3])
+            hr = show(pfd, None)
+            if hr != 0:  # S_OK == 0; user cancelled
+                return None
+
+            # GetResult (index 19) -> IShellItem
+            get_result = ctypes.WINFUNCTYPE(
+                ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)
+            )(vtable[19])
+            psi = ctypes.c_void_p()
+            hr = get_result(pfd, ctypes.byref(psi))
+            if hr < 0:
+                raise ctypes.COMError(hr, None, None)
+
+            # IShellItem vtable: GetDisplayName=5
+            si_vtable = ctypes.cast(
+                ctypes.cast(psi, ctypes.POINTER(ctypes.c_void_p)).contents.value,
+                ctypes.POINTER(ctypes.c_void_p)
+            )
+            SIGDN_FILESYSPATH = 0x80058000
+            get_name = ctypes.WINFUNCTYPE(
+                ctypes.c_long, ctypes.c_void_p, ctypes.c_ulong,
+                ctypes.POINTER(ctypes.c_wchar_p)
+            )(si_vtable[5])
+            name_ptr = ctypes.c_wchar_p()
+            hr = get_name(psi, SIGDN_FILESYSPATH, ctypes.byref(name_ptr))
+            if hr < 0:
+                raise ctypes.COMError(hr, None, None)
+
+            folder = name_ptr.value
+            ole32.CoTaskMemFree(name_ptr)
+            return folder
+
+        finally:
+            ole32.CoUninitialize()
 
     def send_project_image(self):
         parsed = urlparse(self.path)

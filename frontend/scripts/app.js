@@ -183,6 +183,9 @@ document.querySelectorAll('.tab-btn').forEach(b => {
     const targetViewId = (tab === CHAT_SCOPE || tab === AGENT_SCOPE) ? 'chatView' : `${tab}View`;
     document.querySelectorAll('.tab-btn').forEach(x => x.classList.toggle('active', x === b));
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === targetViewId));
+    // 只在对话和 Agent 标签显示右上角模型信息
+    const topbarRight = document.querySelector('.topbar-right');
+    if (topbarRight) topbarRight.style.visibility = (tab === CHAT_SCOPE || tab === AGENT_SCOPE) ? '' : 'hidden';
     if (tab === 'projects') renderProjects();
     if (tab === CHAT_SCOPE || tab === AGENT_SCOPE) {
       activeWorkspace = tab;
