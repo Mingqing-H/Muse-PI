@@ -2,6 +2,7 @@
 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 import argparse
 import json
@@ -536,6 +537,13 @@ def clear_sessions(conn):
     delete_meta(conn, "active_session_id")
 
 
+def delete_pi_session_file(session_path):
+    resolved = resolve_pi_session_path(session_path)
+    if not resolved:
+        raise FileNotFoundError("Pi Agent 会话不存在或路径无效。")
+    Path(resolved).unlink()
+
+
 def latest_user_prompt(messages):
     for message in reversed(messages or []):
         if message.get("role") == "user":
@@ -610,6 +618,109 @@ def pi_session_info(session_path):
     if not session_id and "_" in path.stem:
         session_id = path.stem.rsplit("_", 1)[-1]
     return {"id": session_id, "path": str(path)}
+
+
+def parse_iso_ms(value, default_ms=None):
+    if not value:
+        return default_ms if default_ms is not None else now_ms()
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return int(parsed.timestamp() * 1000)
+    except (TypeError, ValueError):
+        return default_ms if default_ms is not None else now_ms()
+
+
+def pi_content_to_text(content):
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "text" and item.get("text"):
+            parts.append(str(item["text"]))
+        elif item_type == "toolCall":
+            name = item.get("name") or "tool"
+            parts.append(f"[tool: {name}]")
+    return "\n".join(part for part in parts if part).strip()
+
+
+def parse_pi_session_file(path, project_id):
+    fallback_created = int(path.stat().st_mtime * 1000)
+    session_meta = {}
+    messages = []
+
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                if record.get("type") == "session":
+                    session_meta = record
+                    continue
+
+                if record.get("type") != "message":
+                    continue
+                message = record.get("message") or {}
+                role = message.get("role") or "assistant"
+                if role not in {"user", "assistant", "system"}:
+                    role = "assistant"
+                content = pi_content_to_text(message.get("content"))
+                if not content:
+                    continue
+                created = parse_iso_ms(record.get("timestamp"), fallback_created)
+                messages.append({"role": role, "content": content, "created": created})
+    except OSError:
+        return None
+
+    info = pi_session_info(path)
+    session_id = info["id"] or path.stem
+    created = parse_iso_ms(session_meta.get("timestamp"), fallback_created)
+    title = next((m["content"].splitlines()[0] for m in messages if m["role"] == "user"), "Pi Agent 会话")
+    if len(title) > 30:
+        title = title[:30] + "..."
+
+    return {
+        "id": f"pi_{session_id}",
+        "title": title,
+        "kind": "agent",
+        "projectId": project_id,
+        "mode": "task",
+        "status": "idle",
+        "created": created,
+        "messages": messages,
+        "piSessionPath": info["path"],
+        "piSessionId": info["id"],
+        "source": "pi",
+    }
+
+
+def list_project_pi_sessions(project_id, project):
+    cwd = resolve_project_cwd(project)
+    session_dir = pi_session_dir_for_cwd(cwd)
+    if not session_dir.is_dir():
+        return []
+    sessions = []
+    try:
+        paths = sorted(session_dir.glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True)
+    except OSError:
+        return []
+    for path in paths:
+        parsed = parse_pi_session_file(path, project_id)
+        if parsed:
+            sessions.append(parsed)
+    return sessions
 
 
 def resolve_pi_session_path(session_path):
@@ -862,6 +973,15 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
             self.send_project_image()
             return
 
+        if parsed_path == "/api/pi-sessions":
+            params = parse_qs(urlparse(self.path).query)
+            project_id = (params.get("projectId") or [""])[0]
+            with db_connection() as conn:
+                project = load_projects(conn).get(project_id) or active_project(conn)
+                resolved_project_id = (project or {}).get("id") or project_id or "default"
+            self.send_json({"sessions": list_project_pi_sessions(resolved_project_id, project)})
+            return
+
         if self.path == "/api/state":
             with db_connection() as conn:
                 config = load_config(conn)
@@ -937,6 +1057,17 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": False, "error": "Unknown endpoint"}, status=404)
 
     def do_DELETE(self):
+        if self.path == "/api/pi-session":
+            try:
+                payload = self.read_json()
+                delete_pi_session_file(payload.get("piSessionPath"))
+                self.send_json({"ok": True})
+            except FileNotFoundError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=404)
+            except (OSError, ValueError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
         with db_connection() as conn:
             if self.path == "/api/config":
                 clear_config(conn)

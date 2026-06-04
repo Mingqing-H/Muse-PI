@@ -31,6 +31,7 @@ let activePresetIndex = -1;
 let activeConfigScope = CHAT_SCOPE;
 let activeWorkspace = CHAT_SCOPE;
 let activeRunMode = 'chat';
+const syncedPiProjects = new Set();
 
 async function apiRequest(path, options = {}) {
   const resp = await fetch(path, {
@@ -177,7 +178,7 @@ function clearPersistedSessions() {
 
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(b => {
-  b.addEventListener('click', () => {
+  b.addEventListener('click', async () => {
     const tab = b.dataset.tab;
     const targetViewId = (tab === CHAT_SCOPE || tab === AGENT_SCOPE) ? 'chatView' : `${tab}View`;
     document.querySelectorAll('.tab-btn').forEach(x => x.classList.toggle('active', x === b));
@@ -186,7 +187,7 @@ document.querySelectorAll('.tab-btn').forEach(b => {
     if (tab === CHAT_SCOPE || tab === AGENT_SCOPE) {
       activeWorkspace = tab;
       if (tab === AGENT_SCOPE) activeRunMode = 'task';
-      refreshChat();
+      await refreshChat();
     }
     if (tab === 'config') $('configView').scrollTop = 0;
   });
@@ -499,10 +500,18 @@ function getProjects() { ensureDefaultProject(); return projectsCache; }
 function getActiveProjectId() { ensureDefaultProject(); return activeProjectIdCache; }
 function getActiveProject() { const projects = getProjects(); return projects[getActiveProjectId()] || null; }
 
-function setActiveProject(id) {
+async function setActiveProject(id) {
   if (!projectsCache[id]) return;
   activeProjectIdCache = id;
   persistActiveProject();
+  if (isAgentWorkspace()) {
+    try {
+      await syncPiProjectSessions(id, true);
+    } catch (err) {
+      console.error(err);
+      showToast('Pi Agent 会话同步失败', 'var(--rose)');
+    }
+  }
   const projectSessions = getProjectSessionIds(id);
   if (!projectSessions.includes(getActiveId())) setActiveId(projectSessions[0] || null);
   renderProjectControls();
@@ -756,6 +765,76 @@ function getSessionKind(session) {
   return session?.projectId ? AGENT_SCOPE : CHAT_SCOPE;
 }
 
+function piPathKey(path) {
+  return (path || '').replace(/\\/g, '/').toLowerCase();
+}
+
+async function syncPiProjectSessions(projectId = getActiveProjectId(), force = false) {
+  if (!USE_DATABASE || !projectId) return false;
+  if (!force && syncedPiProjects.has(projectId)) return false;
+
+  const data = await apiRequest(`/api/pi-sessions?projectId=${encodeURIComponent(projectId)}`);
+  const piSessions = data.sessions || [];
+  const sessions = getSessions();
+  const pathToId = new Map();
+  Object.entries(sessions).forEach(([id, session]) => {
+    const key = piPathKey(session.piSessionPath);
+    if (key) pathToId.set(key, id);
+  });
+
+  const seenPiPaths = new Set();
+  let changed = false;
+  piSessions.forEach(piSession => {
+    const key = piPathKey(piSession.piSessionPath);
+    if (!key) return;
+    seenPiPaths.add(key);
+    const existingId = pathToId.get(key) || (sessions[piSession.id] ? piSession.id : null);
+    if (existingId) {
+      sessions[existingId] = {
+        ...sessions[existingId],
+        ...piSession,
+        id: existingId,
+        title: piSession.title || sessions[existingId].title,
+        source: 'pi',
+      };
+    } else {
+      sessions[piSession.id] = piSession;
+    }
+    changed = true;
+  });
+
+  Object.entries(sessions).forEach(([id, session]) => {
+    if (getSessionKind(session) !== AGENT_SCOPE || (session.projectId || 'default') !== projectId) return;
+    const key = piPathKey(session.piSessionPath);
+    if (session.source === 'pi' && key && !seenPiPaths.has(key)) {
+      delete sessions[id];
+      changed = true;
+    }
+  });
+
+  syncedPiProjects.add(projectId);
+  if (changed) {
+    saveSessions(sessions);
+    renderProjects();
+  }
+  return changed;
+}
+
+async function deletePiSessionFile(piSessionPath) {
+  if (!piSessionPath) return;
+  const resp = await fetch('/api/pi-session', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ piSessionPath }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    const err = new Error(text || `HTTP ${resp.status}`);
+    err.status = resp.status;
+    throw err;
+  }
+}
+
 function createSession() {
   const s = getSessions();
   const id = 's_' + Date.now();
@@ -782,6 +861,30 @@ function deleteSession(id) {
     setActiveId(keys.length ? keys[0] : null);
   }
   renderSessionList(); renderMessages();
+}
+
+async function deleteSessionWithPiOption(id) {
+  const session = getSessions()[id];
+  if (!session) return;
+  const piSessionPath = getSessionKind(session) === AGENT_SCOPE ? session.piSessionPath : '';
+
+  let deletedPiSession = false;
+  if (piSessionPath && USE_DATABASE) {
+    try {
+      await deletePiSessionFile(piSessionPath);
+      deletedPiSession = true;
+      syncedPiProjects.delete(session.projectId || 'default');
+    } catch (err) {
+      console.error(err);
+      if (err.status !== 404) {
+        showToast('Pi Agent 会话删除失败', 'var(--rose)');
+        return;
+      }
+    }
+  }
+
+  deleteSession(id);
+  showToast(deletedPiSession ? '会话和 Pi Agent 记录已删除' : '会话已删除', 'var(--muted)');
 }
 
 function getActiveSession() {
@@ -832,7 +935,7 @@ function renderSessionList() {
     del.title = '删除';
     del.onclick = (e) => {
       e.stopPropagation();
-      showConfirm(`确定删除「${s.title || '新会话'}」？`, () => deleteSession(id));
+      showConfirm(`确定删除「${s.title || '新会话'}」？`, () => deleteSessionWithPiOption(id));
     };
 
     item.onclick = () => switchSession(id);
@@ -926,9 +1029,17 @@ const inputArea = $('inputArea');
 let isStreaming = false;
 let abortController = null;
 
-function refreshChat() {
+async function refreshChat() {
   updateModelBadge();
   const cfg = getConfig();
+  if (isAgentWorkspace()) {
+    try {
+      await syncPiProjectSessions(getActiveProjectId());
+    } catch (err) {
+      console.error(err);
+      showToast('Pi Agent 会话同步失败', 'var(--rose)');
+    }
+  }
   const requiresApiKey = cfg && !isCliConfig(cfg);
   const invalidConfig = !cfg
     || (isAgentWorkspace() ? !isCliConfig(cfg) : isCliConfig(cfg))
@@ -1543,6 +1654,7 @@ async function sendMessage() {
       if (!target) return;
       target.piSessionPath = piSession.path || target.piSessionPath || '';
       target.piSessionId = piSession.id || target.piSessionId || '';
+      target.source = 'pi';
       saveSessions(sessions);
     };
     if (isAgentWorkspace()) await readCliStream(text, messages, onDelta, onPiSession);
@@ -1591,7 +1703,7 @@ async function initApp() {
   ensurePiCliDefaultConfig();
   renderPresets();
   setConfigScope(CHAT_SCOPE);
-  updateModelBadge(); renderProjectControls(); renderProjects(); refreshChat();
+  updateModelBadge(); renderProjectControls(); renderProjects(); await refreshChat();
 }
 
 initApp();
