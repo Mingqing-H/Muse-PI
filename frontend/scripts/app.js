@@ -549,7 +549,15 @@ function openProjectForm(projectId = null) {
       </label>
       <label>
         <span>本地文件夹路径</span>
-        <input name="path" type="text" value="${escapeHtml(project?.path || '')}" placeholder="C:\\Users\\you\\project" spellcheck="false">
+        <div class="path-input-row">
+          <input name="path" type="text" value="${escapeHtml(project?.path || '')}" placeholder="C:\\Users\\you\\project" spellcheck="false">
+          <button type="button" class="btn-browse" title="浏览文件夹">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <span>浏览</span>
+          </button>
+        </div>
       </label>
       <p>Agent 会在这个目录里执行 Pi CLI。请填写本机可访问的完整文件夹路径。</p>
       <div class="project-form-actions">
@@ -566,6 +574,27 @@ function openProjectForm(projectId = null) {
   overlay.querySelector('.modal-x').onclick = close;
   overlay.querySelector('.form-cancel').onclick = close;
   overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
+  // 浏览文件夹按钮
+  const browseBtn = overlay.querySelector('.btn-browse');
+  if (browseBtn) {
+    browseBtn.onclick = async () => {
+      try {
+        browseBtn.disabled = true;
+        browseBtn.classList.add('loading');
+        const resp = await fetch('/api/pick-folder');
+        const data = await resp.json();
+        if (data.ok && data.path) {
+          pathInput.value = data.path;
+          pathInput.focus();
+        }
+      } catch (e) {
+        showToast('无法打开文件夹选择器', 'var(--rose)');
+      } finally {
+        browseBtn.disabled = false;
+        browseBtn.classList.remove('loading');
+      }
+    };
+  }
   form.onsubmit = event => {
     event.preventDefault();
     const name = nameInput.value.trim();

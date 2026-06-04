@@ -813,6 +813,23 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         session_path = resolve_pi_session_path(payload.get("piSessionPath"))
         self.stream_ndjson(stream_pi_cli(command, prompt, cwd, session_path))
 
+    def handle_pick_folder(self):
+        """打开系统原生文件夹选择对话框，返回选中的路径。"""
+        import tkinter as tk
+        from tkinter import filedialog
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.attributes('-topmost', True)
+            folder = filedialog.askdirectory(parent=root, title="选择项目文件夹")
+            root.destroy()
+            if folder:
+                self.send_json({"ok": True, "path": folder})
+            else:
+                self.send_json({"ok": False, "path": ""})
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=500)
+
     def send_project_image(self):
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
@@ -872,6 +889,10 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
                 provider = (config or {}).get("activeAgentProvider")
                 provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
                 self.send_json(inspect_pi_cli(provider_config.get("apiUrl") if provider == "Pi CLI" else ""))
+            return
+
+        if self.path == "/api/pick-folder":
+            self.handle_pick_folder()
             return
 
         super().do_GET()

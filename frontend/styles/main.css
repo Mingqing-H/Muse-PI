@@ -371,6 +371,52 @@ body {
   border-color: var(--accent);
 }
 
+.path-input-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.path-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.btn-browse {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 14px;
+  background: var(--surface-lift);
+  border: 1px solid var(--border-light);
+  border-radius: 2px;
+  color: var(--muted-light);
+  font-size: 12px;
+  font-family: var(--font-body);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.btn-browse:hover {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.btn-browse:active {
+  transform: scale(0.97);
+}
+
+.btn-browse.loading {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.btn-browse svg {
+  flex-shrink: 0;
+}
+
 .project-form p {
   color: var(--muted-light);
   font-size: 12px;
