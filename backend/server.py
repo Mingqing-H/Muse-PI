@@ -14,7 +14,7 @@ import webbrowser
 import uuid
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "llm_studio.sqlite"
 
@@ -596,7 +596,7 @@ def stream_local_cli(command, prompt, cwd):
 
 class LLMStudioHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(ROOT), **kwargs)
+        super().__init__(*args, directory=str(ROOT / "frontend"), **kwargs)
 
     def send_json(self, payload, status=200):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
