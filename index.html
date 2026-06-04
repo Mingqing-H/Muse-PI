@@ -5,24 +5,47 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LLM Studio</title>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;1,300;1,400&family=Instrument+Sans:wght@400;500;600&family=Noto+Serif+SC:wght@300;400;500&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles/main.css">
+<link rel="stylesheet" href="styles/main.css?v=20260604-config-grid">
 </head>
 <body>
 
 <div class="topbar">
   <div class="logo">LLM <span>Studio</span></div>
   <div class="tabs">
+    <button class="tab-btn" data-tab="projects">项目</button>
     <button class="tab-btn active" data-tab="chat">对话</button>
     <button class="tab-btn" data-tab="config">配置</button>
   </div>
   <div class="topbar-right">
+    <span class="project-badge" id="projectBadge">本地工作区</span>
     <span class="model-badge empty" id="modelBadge">未配置</span>
+  </div>
+</div>
+
+<div class="view" id="projectsView">
+  <div class="projects-layout">
+    <div class="projects-header">
+      <h2>项目 <em>工作台</em></h2>
+      <p>为不同代码目录建立独立上下文、会话和任务记录。</p>
+    </div>
+    <div class="projects-toolbar">
+      <button class="btn btn-primary" id="btnCreateProject">新建项目</button>
+      <button class="btn btn-secondary" id="btnOpenProjectChat">进入对话</button>
+    </div>
+    <div class="project-grid" id="projectGrid"></div>
   </div>
 </div>
 
 <div class="view active" id="chatView">
   <div class="chat-layout">
     <div class="sidebar" id="sidebar">
+      <div class="project-switcher">
+        <label>当前项目</label>
+        <div class="project-select-row">
+          <select id="projectSelect"></select>
+          <button id="btnNewProject" title="新建项目">+</button>
+        </div>
+      </div>
       <div class="sidebar-header">
         <button class="btn-new" id="btnNewSession">+ 新建会话</button>
         <button id="btnClearAll">全部清空</button>
@@ -32,6 +55,13 @@
     <div class="chat-main">
       <div class="messages" id="messages"></div>
       <div class="input-area" id="inputArea" style="display:none">
+        <div class="runbar">
+          <div class="mode-switch" id="modeSwitch">
+            <button class="mode-btn active" data-mode="chat">对话</button>
+            <button class="mode-btn" data-mode="task">任务</button>
+          </div>
+          <span id="activeProjectHint"></span>
+        </div>
         <div class="input-row">
           <textarea id="input" rows="1" placeholder="输入消息..."></textarea>
           <button class="send-btn" id="sendBtn" title="发送">&#8593;</button>
@@ -51,18 +81,19 @@
     <div class="card">
       <div class="presets" id="presets"></div>
       <div class="field">
-        <label>API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span></label>
+        <label id="apiUrlLabel">API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span></label>
         <input type="text" id="apiUrl" placeholder="https://api.openai.com/v1/chat/completions" spellcheck="false">
+        <div class="cli-path-status" id="piCliPathStatus"></div>
       </div>
       <div class="field">
-        <label>API Key</label>
+        <label id="apiKeyLabel">API Key</label>
         <div class="input-wrap">
           <input type="password" id="apiKey" placeholder="sk-..." spellcheck="false" autocomplete="off">
           <button class="toggle-vis" id="toggleKey" title="Show / hide">&#9675;</button>
         </div>
       </div>
       <div class="field">
-        <label>模型名称</label>
+        <label id="modelNameLabel">模型名称</label>
         <input type="text" id="modelName" placeholder="gpt-4o" spellcheck="false" list="model-list">
         <datalist id="model-list"></datalist>
       </div>
@@ -77,6 +108,21 @@
 
 <div class="toast" id="toast"></div>
 
-<script src="scripts/app.js"></script>
+<script>
+window.MathJax = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\(', '\\)']],
+    displayMath: [['$$', '$$'], ['\\[', '\\]']],
+    processEscapes: true
+  },
+  options: {
+    skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+  }
+};
+</script>
+<script defer src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+<script defer src="scripts/app.js?v=20260604-provider-configs"></script>
 </body>
 </html>

@@ -1,286 +1,756 @@
-"""
-LLM Studio 的本地服务。
-
-你可以把这个文件理解成网页和数据库之间的“中间人”：
-
-1. 浏览器负责显示页面，也就是 index.html、CSS、JS。
-2. 这个 Python 服务负责接收浏览器发来的保存/读取请求。
-3. SQLite 数据库负责把配置和会话真正保存到项目文件夹里。
-
-为什么需要它？
-普通浏览器页面不能直接读写 SQLite 文件，所以要让 Python 帮忙。
-"""
+"""Local HTTP server and SQLite persistence for LLM Studio."""
 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import contextmanager
 from pathlib import Path
 import argparse
 import json
+import shlex
+import shutil
 import sqlite3
+import subprocess
+import time
 import webbrowser
+import uuid
 
 
-# 当前项目根目录。
-# __file__ 是 server.py 自己的路径。
-# parent 表示 server.py 所在的文件夹，也就是你的项目文件夹。
 ROOT = Path(__file__).resolve().parent
-
-# 数据库文件夹和数据库文件路径。
-# 最终会生成：项目目录/data/llm_studio.sqlite
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "llm_studio.sqlite"
 
-# 127.0.0.1 表示“只在你自己的电脑上访问”。
-# 别人不能通过互联网访问这个服务，开发阶段更安全。
 HOST = "127.0.0.1"
-
-# 本地服务端口。
-# 打开网页时使用：http://127.0.0.1:8765/index.html
 PORT = 8765
+
+SCHEMA_VERSION = 3
+
+PRESET_URLS = {
+    "MiMo": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+    "OpenAI": "https://api.openai.com/v1/chat/completions",
+    "DeepSeek": "https://api.deepseek.com/v1/chat/completions",
+    "Qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "GLM": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    "Kimi": "https://api.moonshot.cn/v1/chat/completions",
+    "SiliconFlow": "https://api.siliconflow.cn/v1/chat/completions",
+    "Pi CLI": "",
+}
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+def normalize_url(url):
+    return (url or "").strip().rstrip("/")
+
+
+def infer_provider(config):
+    provider = (config or {}).get("provider")
+    if provider:
+        return provider
+
+    api_url = normalize_url((config or {}).get("apiUrl"))
+    for name, preset_url in PRESET_URLS.items():
+        if normalize_url(preset_url) == api_url:
+            return name
+    return "custom"
+
+
+def connect_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+@contextmanager
+def db_connection():
+    conn = connect_db()
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def table_exists(conn, table_name):
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return bool(row)
+
+
+def table_columns(conn, table_name):
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def ensure_column(conn, table_name, column_name, definition):
+    if column_name not in table_columns(conn, table_name):
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def read_legacy_state(conn, key, default=None):
+    if not table_exists(conn, "app_state"):
+        return default
+    row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except json.JSONDecodeError:
+        return default
 
 
 def init_db():
-    """创建数据库文件和表。
-
-    如果 data 文件夹不存在，就创建它。
-    如果数据库表已经存在，就什么都不重复创建。
-
-    这里目前只建了一张 app_state 表：
-    - key：保存项的名字，比如 config、sessions、activeId
-    - value：保存项的内容，用 JSON 字符串保存
-
-    这是一种简单的“键值存储”设计，适合当前这个小项目。
-    """
-
     DATA_DIR.mkdir(exist_ok=True)
-
-    # with sqlite3.connect(...) as conn 的意思是：
-    # 打开数据库，执行完里面的代码后自动保存并关闭连接。
-    with sqlite3.connect(DB_PATH) as conn:
+    with db_connection() as conn:
+        create_schema(conn)
+        migrate_legacy_app_state(conn)
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS app_state (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            )
-            """
-        )
-
-
-def get_state(key, default=None):
-    """从数据库读取一个保存项。
-
-    参数 key 是要读取的名字，比如：
-    - "config"：读取 API 配置
-    - "sessions"：读取所有会话
-    - "activeId"：读取当前打开的是哪个会话
-
-    如果数据库里没有这个 key，就返回 default。
-    """
-
-    with sqlite3.connect(DB_PATH) as conn:
-        # 问号 ? 是占位符。
-        # 这样写比自己拼 SQL 字符串更安全，也不容易出错。
-        row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
-
-    if not row:
-        return default
-
-    try:
-        # value 存进去时是 JSON 字符串。
-        # 读取出来后，要转回 Python 的字典/列表/字符串。
-        return json.loads(row[0])
-    except json.JSONDecodeError:
-        # 如果 value 不是合法 JSON，就返回默认值，避免程序直接崩掉。
-        return default
-
-
-def set_state(key, value):
-    """把一个保存项写入数据库。
-
-    如果 key 原来不存在，就新增一行。
-    如果 key 原来已经存在，就更新原来的 value。
-    """
-
-    # ensure_ascii=False 的作用是：
-    # 保存中文时直接保存中文，而不是保存成 \u4f60\u597d 这种编码形式。
-    payload = json.dumps(value, ensure_ascii=False)
-
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            INSERT INTO app_state (key, value)
-            VALUES (?, ?)
+            INSERT INTO app_meta (key, value)
+            VALUES ('schema_version', ?)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            (key, payload),
+            (json.dumps(SCHEMA_VERSION),),
         )
 
 
-def delete_state(*keys):
-    """从数据库删除一个或多个保存项。
+def create_schema(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS app_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
 
-    *keys 表示可以传多个 key。
-    比如 delete_state("sessions", "activeId") 会同时删除会话和当前会话 ID。
-    """
+        CREATE TABLE IF NOT EXISTS model_provider_configs (
+            provider TEXT PRIMARY KEY,
+            api_url TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
 
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.executemany("DELETE FROM app_state WHERE key = ?", [(key,) for key in keys])
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_sessions (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            project_id TEXT,
+            mode TEXT NOT NULL DEFAULT 'chat',
+            status TEXT NOT NULL DEFAULT 'idle',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+            UNIQUE (session_id, position)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_chat_messages_session_position
+            ON chat_messages(session_id, position);
+
+        """
+    )
+    ensure_column(conn, "chat_sessions", "project_id", "TEXT")
+    ensure_column(conn, "chat_sessions", "mode", "TEXT NOT NULL DEFAULT 'chat'")
+    ensure_column(conn, "chat_sessions", "status", "TEXT NOT NULL DEFAULT 'idle'")
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_updated
+            ON chat_sessions(project_id, updated_at)
+        """
+    )
+
+
+def migrate_legacy_app_state(conn):
+    if not table_exists(conn, "app_state"):
+        return
+
+    already_migrated = conn.execute(
+        "SELECT value FROM app_meta WHERE key = 'legacy_app_state_migrated'"
+    ).fetchone()
+    if already_migrated:
+        conn.execute("DROP TABLE IF EXISTS app_state")
+        return
+
+    legacy_config = read_legacy_state(conn, "config")
+    legacy_sessions = read_legacy_state(conn, "sessions", {})
+    legacy_active_id = read_legacy_state(conn, "activeId")
+
+    if legacy_config:
+        save_config(conn, legacy_config)
+    if legacy_sessions:
+        save_sessions(conn, legacy_sessions)
+    if legacy_active_id:
+        set_meta(conn, "active_session_id", legacy_active_id)
+
+    set_meta(conn, "legacy_app_state_migrated", True)
+    conn.execute("DROP TABLE IF EXISTS app_state")
+
+
+def set_meta(conn, key, value):
+    conn.execute(
+        """
+        INSERT INTO app_meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (key, json.dumps(value, ensure_ascii=False)),
+    )
+
+
+def get_meta(conn, key, default=None):
+    row = conn.execute("SELECT value FROM app_meta WHERE key = ?", (key,)).fetchone()
+    if not row:
+        return default
+    try:
+        return json.loads(row["value"])
+    except json.JSONDecodeError:
+        return default
+
+
+def delete_meta(conn, *keys):
+    conn.executemany("DELETE FROM app_meta WHERE key = ?", [(key,) for key in keys])
+
+
+def normalize_config_store(config):
+    if not config:
+        return {"activeProvider": None, "providers": {}}
+
+    if isinstance(config, dict) and isinstance(config.get("providers"), dict):
+        return {
+            "activeProvider": config.get("activeProvider"),
+            "providers": config.get("providers") or {},
+        }
+
+    if isinstance(config, dict) and any(config.get(k) for k in ("apiUrl", "apiKey", "modelName")):
+        provider = infer_provider(config)
+        return {
+            "activeProvider": provider,
+            "providers": {
+                provider: {
+                    "provider": provider,
+                    "apiUrl": config.get("apiUrl", ""),
+                    "apiKey": config.get("apiKey", ""),
+                    "modelName": config.get("modelName", ""),
+                }
+            },
+        }
+
+    return {"activeProvider": None, "providers": {}}
+
+
+def save_config(conn, config):
+    store = normalize_config_store(config)
+    timestamp = now_ms()
+
+    if store["activeProvider"]:
+        set_meta(conn, "active_provider", store["activeProvider"])
+
+    if isinstance(config, dict) and isinstance(config.get("providers"), dict):
+        incoming_providers = set(store["providers"].keys())
+        if incoming_providers:
+            placeholders = ",".join("?" for _ in incoming_providers)
+            conn.execute(
+                f"DELETE FROM model_provider_configs WHERE provider NOT IN ({placeholders})",
+                tuple(incoming_providers),
+            )
+        else:
+            conn.execute("DELETE FROM model_provider_configs")
+
+    for provider, provider_config in store["providers"].items():
+        if not provider_config:
+            continue
+        conn.execute(
+            """
+            INSERT INTO model_provider_configs
+                (provider, api_url, api_key, model_name, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(provider) DO UPDATE SET
+                api_url = excluded.api_url,
+                api_key = excluded.api_key,
+                model_name = excluded.model_name,
+                updated_at = excluded.updated_at
+            """,
+            (
+                provider_config.get("provider") or provider,
+                provider_config.get("apiUrl", ""),
+                provider_config.get("apiKey", ""),
+                provider_config.get("modelName", ""),
+                timestamp,
+            ),
+        )
+
+
+def load_config(conn):
+    rows = conn.execute(
+        """
+        SELECT provider, api_url, api_key, model_name
+        FROM model_provider_configs
+        ORDER BY provider
+        """
+    ).fetchall()
+    providers = {
+        row["provider"]: {
+            "provider": row["provider"],
+            "apiUrl": row["api_url"],
+            "apiKey": row["api_key"],
+            "modelName": row["model_name"],
+        }
+        for row in rows
+    }
+    active_provider = get_meta(conn, "active_provider")
+    if active_provider not in providers:
+        active_provider = next(iter(providers), None)
+    return {"activeProvider": active_provider, "providers": providers} if providers else None
+
+
+def clear_config(conn):
+    conn.execute("DELETE FROM model_provider_configs")
+    delete_meta(conn, "active_provider")
+
+
+def default_project():
+    timestamp = now_ms()
+    return {
+        "id": "default",
+        "name": "本地工作区",
+        "path": str(ROOT),
+        "description": "默认项目",
+        "created": timestamp,
+        "updated": timestamp,
+    }
+
+
+def save_projects(conn, projects):
+    projects = projects or {}
+    timestamp = now_ms()
+    conn.execute("DELETE FROM projects")
+    for project_id, project in projects.items():
+        pid = project.get("id") or project_id or f"p_{uuid.uuid4().hex[:10]}"
+        conn.execute(
+            """
+            INSERT INTO projects (id, name, path, description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pid,
+                project.get("name") or "未命名项目",
+                project.get("path") or str(ROOT),
+                project.get("description") or "",
+                int(project.get("created") or timestamp),
+                int(project.get("updated") or timestamp),
+            ),
+        )
+
+
+def load_projects(conn):
+    rows = conn.execute(
+        """
+        SELECT id, name, path, description, created_at, updated_at
+        FROM projects
+        ORDER BY updated_at DESC, created_at DESC
+        """
+    ).fetchall()
+    projects = {
+        row["id"]: {
+            "id": row["id"],
+            "name": row["name"],
+            "path": row["path"],
+            "description": row["description"],
+            "created": row["created_at"],
+            "updated": row["updated_at"],
+        }
+        for row in rows
+    }
+    if projects:
+        return projects
+
+    project = default_project()
+    save_projects(conn, {project["id"]: project})
+    set_meta(conn, "active_project_id", project["id"])
+    return {project["id"]: project}
+
+
+def active_project(conn):
+    projects = load_projects(conn)
+    active_id = get_meta(conn, "active_project_id")
+    if active_id not in projects:
+        active_id = next(iter(projects), None)
+        if active_id:
+            set_meta(conn, "active_project_id", active_id)
+    return projects.get(active_id)
+
+
+def save_sessions(conn, sessions):
+    sessions = sessions or {}
+    timestamp = now_ms()
+
+    conn.execute("DELETE FROM chat_messages")
+    conn.execute("DELETE FROM chat_sessions")
+
+    for session_id, session in sessions.items():
+        created_at = int(session.get("created") or timestamp)
+        messages = session.get("messages") or []
+        conn.execute(
+            """
+            INSERT INTO chat_sessions
+                (id, title, project_id, mode, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session.get("id") or session_id,
+                session.get("title") or "New chat",
+                session.get("projectId"),
+                session.get("mode") or "chat",
+                session.get("status") or "idle",
+                created_at,
+                timestamp,
+            ),
+        )
+        for position, message in enumerate(messages):
+            role = message.get("role") or "assistant"
+            if role not in {"user", "assistant", "system"}:
+                role = "assistant"
+            conn.execute(
+                """
+                INSERT INTO chat_messages
+                    (session_id, position, role, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    session.get("id") or session_id,
+                    position,
+                    role,
+                    message.get("content") or "",
+                    created_at + position,
+                ),
+            )
+
+
+def load_sessions(conn):
+    sessions = {}
+    session_rows = conn.execute(
+        """
+        SELECT id, title, project_id, mode, status, created_at
+        FROM chat_sessions
+        ORDER BY created_at DESC
+        """
+    ).fetchall()
+    for row in session_rows:
+        messages = conn.execute(
+            """
+            SELECT role, content
+            FROM chat_messages
+            WHERE session_id = ?
+            ORDER BY position
+            """,
+            (row["id"],),
+        ).fetchall()
+        sessions[row["id"]] = {
+            "id": row["id"],
+            "title": row["title"],
+            "projectId": row["project_id"],
+            "mode": row["mode"] or "chat",
+            "status": row["status"] or "idle",
+            "created": row["created_at"],
+            "messages": [
+                {"role": message["role"], "content": message["content"]}
+                for message in messages
+            ],
+        }
+    return sessions
+
+
+def clear_sessions(conn):
+    conn.execute("DELETE FROM chat_messages")
+    conn.execute("DELETE FROM chat_sessions")
+    delete_meta(conn, "active_session_id")
+
+
+def latest_user_prompt(messages):
+    for message in reversed(messages or []):
+        if message.get("role") == "user":
+            return message.get("content") or ""
+    return ""
+
+
+def split_command(command):
+    command = (command or "").strip()
+    if not command:
+        return []
+    return shlex.split(command, posix=False)
+
+
+def resolve_command_args(args):
+    if not args:
+        return args
+    resolved = shutil.which(args[0])
+    if resolved:
+        return [resolved, *args[1:]]
+    return args
+
+
+def normalize_pi_command(command):
+    command = (command or "").strip()
+    if not command:
+        return "pi -p {prompt}"
+
+    lowered = command.lower()
+    if "{prompt}" in command or " --print" in lowered or " -p" in lowered:
+        return command
+    return f"{command} -p {{prompt}}"
+
+
+def inspect_pi_cli(command=""):
+    normalized = normalize_pi_command(command)
+    args = resolve_command_args(split_command(normalized))
+    detected_path = shutil.which("pi") or shutil.which("pi.cmd")
+    return {
+        "detectedPath": detected_path or "",
+        "configuredPath": (command or "").strip(),
+        "command": normalized,
+        "executable": args[0] if args else "",
+        "args": args,
+    }
+
+
+def resolve_project_cwd(project):
+    project_path = (project or {}).get("path") or str(ROOT)
+    try:
+        path = Path(project_path).expanduser()
+        if path.exists() and path.is_dir():
+            return str(path)
+    except OSError:
+        pass
+    return str(ROOT)
+
+
+def stream_local_cli(command, prompt, cwd):
+    if "{prompt}" in command:
+        args = [
+            arg.replace("{prompt}", prompt)
+            for arg in split_command(command)
+        ]
+        stdin_payload = None
+    else:
+        args = split_command(command)
+        stdin_payload = prompt
+
+    args = resolve_command_args(args)
+
+    if not args:
+        yield {"error": "Pi CLI 命令为空，请先在配置里填写命令。"}
+        return
+
+    try:
+        proc = subprocess.Popen(
+            args,
+            cwd=cwd,
+            stdin=subprocess.PIPE if stdin_payload is not None else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
+    except FileNotFoundError:
+        yield {"error": f"找不到命令：{args[0]}。请确认 Pi CLI 已安装并在 PATH 中，或填写完整路径。"}
+        return
+    except OSError as exc:
+        yield {"error": f"启动 Pi CLI 失败：{exc}"}
+        return
+
+    if stdin_payload is not None and proc.stdin:
+        try:
+            proc.stdin.write(stdin_payload)
+            proc.stdin.close()
+        except OSError:
+            pass
+
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        yield {"delta": line}
+
+    code = proc.wait()
+    if code != 0:
+        yield {"error": f"Pi CLI 已退出，退出码 {code}。"}
 
 
 class LLMStudioHandler(SimpleHTTPRequestHandler):
-    """处理浏览器请求的类。
-
-    浏览器访问网页、读取数据库、保存数据库，都会先到这里。
-
-    它继承 SimpleHTTPRequestHandler，所以它有两个能力：
-    1. 像普通静态服务器一样返回 index.html、CSS、JS、图片。
-    2. 额外处理我们自己写的 /api/... 数据接口。
-    """
-
     def __init__(self, *args, **kwargs):
-        # directory=str(ROOT) 表示：
-        # 静态文件从项目根目录提供。
-        # 所以浏览器才能访问 index.html、styles/main.css、scripts/app.js。
         super().__init__(*args, directory=str(ROOT), **kwargs)
 
     def send_json(self, payload, status=200):
-        """给浏览器返回 JSON 数据。
-
-        payload 是要返回的数据，比如 {"ok": True}。
-        status 是 HTTP 状态码，200 表示成功，404 表示接口不存在，500 表示出错。
-        """
-
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
+    def end_headers(self):
+        if not self.path.startswith("/api/"):
+            self.send_header("Cache-Control", "no-store, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
+        super().end_headers()
+
     def read_json(self):
-        """读取浏览器发来的 JSON 数据。
-
-        前端用 fetch(..., { body: JSON.stringify(...) }) 发数据。
-        这里负责把那段 JSON 文本转成 Python 能用的字典。
-        """
-
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
+    def stream_ndjson(self, events, status=200):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        for event in events:
+            body = (json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8")
+            self.wfile.write(body)
+            self.wfile.flush()
+
+    def stream_cli_chat(self, payload):
+        with db_connection() as conn:
+            config = load_config(conn) or {}
+            provider = config.get("activeProvider")
+            provider_config = (config.get("providers") or {}).get(provider) or {}
+            project = load_projects(conn).get(payload.get("projectId")) or active_project(conn)
+
+        if not provider:
+            provider = "Pi CLI"
+            provider_config = {"apiUrl": "pi", "modelName": "default"}
+
+        if provider != "Pi CLI":
+            self.stream_ndjson([{"error": "当前 Provider 不是 Pi CLI，请先在配置里选择 Pi CLI。"}], status=400)
+            return
+
+        command = normalize_pi_command(provider_config.get("apiUrl"))
+        prompt = payload.get("prompt")
+        if prompt is None:
+            prompt = latest_user_prompt(payload.get("messages") or [])
+        cwd = resolve_project_cwd(project)
+        self.stream_ndjson(stream_local_cli(command, prompt, cwd))
+
     def do_GET(self):
-        """处理 GET 请求。
-
-        GET 通常表示“读取数据”。
-
-        当前自定义接口：
-        - GET /api/state：读取配置、所有会话、当前会话 ID
-
-        如果访问的不是 /api/state，就交给父类处理。
-        比如访问 /index.html 时，父类会把 index.html 文件返回给浏览器。
-        """
-
         if self.path == "/api/state":
-            self.send_json(
-                {
-                    "config": get_state("config"),
-                    "sessions": get_state("sessions", {}),
-                    "activeId": get_state("activeId"),
-                }
-            )
+            with db_connection() as conn:
+                config = load_config(conn)
+                provider = (config or {}).get("activeProvider")
+                provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
+                projects = load_projects(conn)
+                active_project_id = get_meta(conn, "active_project_id")
+                if active_project_id not in projects:
+                    active_project_id = next(iter(projects), None)
+                self.send_json(
+                    {
+                        "config": config,
+                        "piCli": inspect_pi_cli(provider_config.get("apiUrl") if provider == "Pi CLI" else ""),
+                        "projects": projects,
+                        "activeProjectId": active_project_id,
+                        "sessions": load_sessions(conn),
+                        "activeId": get_meta(conn, "active_session_id"),
+                    }
+                )
+            return
+
+        if self.path == "/api/pi-cli-info":
+            with db_connection() as conn:
+                config = load_config(conn)
+                provider = (config or {}).get("activeProvider")
+                provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
+                self.send_json(inspect_pi_cli(provider_config.get("apiUrl") if provider == "Pi CLI" else ""))
             return
 
         super().do_GET()
 
     def do_POST(self):
-        """处理 POST 请求。
-
-        POST 通常表示“保存数据”。
-
-        当前自定义接口：
-        - POST /api/config：保存 API 配置
-        - POST /api/sessions：保存所有会话
-        - POST /api/active-session：保存当前打开的会话 ID
-        """
-
         try:
             payload = self.read_json()
+            if self.path == "/api/cli/chat":
+                self.stream_cli_chat(payload)
+                return
 
+            with db_connection() as conn:
+                if self.path == "/api/config":
+                    save_config(conn, payload.get("config"))
+                    self.send_json({"ok": True})
+                    return
+
+                if self.path == "/api/projects":
+                    save_projects(conn, payload.get("projects", {}))
+                    self.send_json({"ok": True})
+                    return
+
+                if self.path == "/api/active-project":
+                    set_meta(conn, "active_project_id", payload.get("activeProjectId"))
+                    self.send_json({"ok": True})
+                    return
+
+                if self.path == "/api/sessions":
+                    save_sessions(conn, payload.get("sessions", {}))
+                    self.send_json({"ok": True})
+                    return
+
+                if self.path == "/api/active-session":
+                    set_meta(conn, "active_session_id", payload.get("activeId"))
+                    self.send_json({"ok": True})
+                    return
+
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=500)
+            return
+
+        self.send_json({"ok": False, "error": "Unknown endpoint"}, status=404)
+
+    def do_DELETE(self):
+        with db_connection() as conn:
             if self.path == "/api/config":
-                set_state("config", payload.get("config"))
+                clear_config(conn)
                 self.send_json({"ok": True})
                 return
 
             if self.path == "/api/sessions":
-                set_state("sessions", payload.get("sessions", {}))
+                clear_sessions(conn)
                 self.send_json({"ok": True})
                 return
-
-            if self.path == "/api/active-session":
-                set_state("activeId", payload.get("activeId"))
-                self.send_json({"ok": True})
-                return
-
-        except Exception as exc:
-            # 如果保存过程中出错，就告诉浏览器失败原因。
-            self.send_json({"ok": False, "error": str(exc)}, status=500)
-            return
-
-        # 走到这里，说明浏览器请求了一个我们没有写过的接口。
-        self.send_json({"ok": False, "error": "Unknown endpoint"}, status=404)
-
-    def do_DELETE(self):
-        """处理 DELETE 请求。
-
-        DELETE 通常表示“删除数据”。
-
-        当前自定义接口：
-        - DELETE /api/config：删除 API 配置
-        - DELETE /api/sessions：删除所有会话和当前会话 ID
-        """
-
-        if self.path == "/api/config":
-            delete_state("config")
-            self.send_json({"ok": True})
-            return
-
-        if self.path == "/api/sessions":
-            delete_state("sessions", "activeId")
-            self.send_json({"ok": True})
-            return
 
         self.send_json({"ok": False, "error": "Unknown endpoint"}, status=404)
 
 
-# 下面这段是程序入口。
-# 只有当你直接运行 python server.py 时，它才会执行。
-# 如果别的 Python 文件 import server.py，这里不会自动启动服务。
 if __name__ == "__main__":
-    # argparse 用来读取命令行参数。
-    # 比如 python server.py --no-open
-    # --no-open 的意思是：启动服务，但不要自动打开浏览器。
     parser = argparse.ArgumentParser(description="Run LLM Studio with a local SQLite database.")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
+    parser.add_argument("--port", type=int, default=PORT, help="Port to bind. Defaults to 8765.")
     args = parser.parse_args()
 
-    # 先确保数据库和表已经创建。
     init_db()
 
-    # 创建一个本地 HTTP 服务。
-    # ThreadingHTTPServer 表示可以同时处理多个请求。
-    server = ThreadingHTTPServer((HOST, PORT), LLMStudioHandler)
-
-    url = f"http://{HOST}:{PORT}/index.html"
+    server = ThreadingHTTPServer((HOST, args.port), LLMStudioHandler)
+    url = f"http://{HOST}:{args.port}/index.html"
     print(f"LLM Studio is running: {url}")
     print(f"SQLite database: {DB_PATH}")
 
-    # 默认自动打开浏览器。
-    # 如果命令里带了 --no-open，就不自动打开。
     if not args.no_open:
         webbrowser.open(url)
 
-    # 让服务一直运行。
-    # 只要这个程序不关闭，网页就可以继续读写数据库。
     server.serve_forever()
