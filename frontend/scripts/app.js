@@ -32,6 +32,10 @@ let activeConfigScope = CHAT_SCOPE;
 let activeWorkspace = CHAT_SCOPE;
 let activeRunMode = 'chat';
 const syncedPiProjects = new Set();
+const streamingByScope = { [CHAT_SCOPE]: false, [AGENT_SCOPE]: false };
+const abortControllersByScope = { [CHAT_SCOPE]: null, [AGENT_SCOPE]: null };
+const inFlightByScope = { [CHAT_SCOPE]: null, [AGENT_SCOPE]: null };
+const unreadScopes = new Set();
 
 async function apiRequest(path, options = {}) {
   const resp = await fetch(path, {
@@ -176,6 +180,47 @@ function clearPersistedSessions() {
   }
 }
 
+function isWorkspaceStreaming(scope = activeWorkspace) {
+  return !!streamingByScope[scope];
+}
+
+function setWorkspaceStreaming(scope, value, controller = null) {
+  streamingByScope[scope] = !!value;
+  abortControllersByScope[scope] = value ? controller : null;
+  updateSendButtonState();
+}
+
+function updateSendButtonState() {
+  if (!sendBtn) return;
+  if (isWorkspaceStreaming(activeWorkspace)) {
+    sendBtn.innerHTML = '&#9632;';
+    sendBtn.classList.add('stop');
+    sendBtn.title = '停止';
+  } else {
+    sendBtn.innerHTML = '&#8593;';
+    sendBtn.classList.remove('stop');
+    sendBtn.title = '发送';
+  }
+}
+
+function renderTabUnread() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    const scope = btn.dataset.tab;
+    btn.classList.toggle('has-unread', unreadScopes.has(scope) && scope !== activeWorkspace);
+  });
+}
+
+function markWorkspaceUnread(scope) {
+  if (scope === activeWorkspace) return;
+  unreadScopes.add(scope);
+  renderTabUnread();
+}
+
+function clearWorkspaceUnread(scope) {
+  unreadScopes.delete(scope);
+  renderTabUnread();
+}
+
 // Tab switching
 document.querySelectorAll('.tab-btn').forEach(b => {
   b.addEventListener('click', async () => {
@@ -190,9 +235,12 @@ document.querySelectorAll('.tab-btn').forEach(b => {
     if (tab === CHAT_SCOPE || tab === AGENT_SCOPE) {
       activeWorkspace = tab;
       if (tab === AGENT_SCOPE) activeRunMode = 'task';
+      clearWorkspaceUnread(tab);
       await refreshChat();
     }
     if (tab === 'config') $('configView').scrollTop = 0;
+    updateSendButtonState();
+    renderTabUnread();
   });
 });
 
@@ -750,7 +798,7 @@ if ($('btnOpenProjectChat')) $('btnOpenProjectChat').onclick = () => document.qu
 
 document.querySelectorAll('.mode-btn').forEach(btn => {
   btn.onclick = () => {
-    if (isStreaming) return;
+    if (isWorkspaceStreaming()) return;
     activeRunMode = isAgentWorkspace() ? 'task' : (btn.dataset.mode || 'chat');
     document.querySelectorAll('.mode-btn').forEach(x => x.classList.toggle('active', x === btn));
     inputEl.placeholder = isAgentWorkspace() ? '描述要在当前项目中执行的任务...' : '输入消息...';
@@ -901,8 +949,21 @@ function updateActiveSession(patch) {
   Object.assign(s[id], patch); saveSessions(s);
 }
 
+function getSessionById(id) {
+  const sessions = getSessions();
+  return id && sessions[id] ? sessions[id] : null;
+}
+
+function updateSessionById(id, patch) {
+  const sessions = getSessions();
+  if (!id || !sessions[id]) return null;
+  Object.assign(sessions[id], patch);
+  saveSessions(sessions);
+  return sessions[id];
+}
+
 function switchSession(id) {
-  if (isStreaming) return;
+  if (isWorkspaceStreaming()) return;
   setActiveId(id); renderSessionList(); renderMessages();
 }
 
@@ -996,7 +1057,7 @@ function setBubbleMeta(bubble, role, meta = {}) {
   metaEl.classList.toggle('empty', !text);
 }
 
-$('btnNewSession').onclick = () => { if (isStreaming) return; createSession(); $('input').focus(); };
+$('btnNewSession').onclick = () => { if (isWorkspaceStreaming()) return; createSession(); $('input').focus(); };
 
 $('btnClearAll').onclick = () => {
   showConfirm('确定删除所有会话？此操作不可撤销。', () => {
@@ -1028,9 +1089,6 @@ const messagesEl = $('messages');
 const inputEl = $('input');
 const sendBtn = $('sendBtn');
 const inputArea = $('inputArea');
-
-let isStreaming = false;
-let abortController = null;
 
 async function refreshChat() {
   updateModelBadge();
@@ -1075,7 +1133,8 @@ async function refreshChat() {
 function renderMessages() {
   messagesEl.innerHTML = '';
   const session = getActiveSession();
-  if (!session || session.messages.length === 0) {
+  const visibleMessages = (session?.messages || []).filter(shouldRenderMessage);
+  if (!session || visibleMessages.length === 0) {
     messagesEl.innerHTML = `
       <div class="welcome">
         <div class="icon">&#9670;</div>
@@ -1090,13 +1149,45 @@ function renderMessages() {
     return;
   }
   const sessionKind = getSessionKind(session);
-  session.messages.forEach(m => appendBubble(m.role, m.content, false, {
+  visibleMessages.forEach(m => appendBubble(m.role, m.content, false, {
     created: m.created,
     thinkingMs: m.thinkingMs,
     kind: sessionKind,
     projectId: session.projectId,
   }));
+  renderInFlightMessage(sessionKind, getActiveId());
   scrollToBottom();
+}
+
+function renderInFlightMessage(scope, sessionId) {
+  const flight = inFlightByScope[scope];
+  if (!flight || flight.sessionId !== sessionId) return;
+  const bubble = appendBubble('assistant', flight.content || flight.thinkingText, false, {
+    created: flight.started,
+    thinkingMs: flight.firstDeltaAt ? flight.firstDeltaAt - flight.started : undefined,
+    kind: flight.kind,
+    projectId: flight.projectId,
+    pending: !flight.firstDeltaAt,
+  });
+  bubble.classList.add('streaming');
+  if (!flight.content) bubble.classList.add('thinking');
+  flight.bubble = bubble;
+  flight.renderer = createRichStreamRenderer(bubble, {
+    created: flight.started,
+    kind: flight.kind,
+    projectId: flight.projectId,
+    pending: !flight.firstDeltaAt,
+  });
+  if (flight.content) flight.renderer(flight.content, true);
+}
+
+function shouldRenderMessage(message) {
+  const content = (message?.content || '').trim();
+  if (!content) return false;
+  if (message?.role === 'tool' || message?.role === 'toolResult') return false;
+  if (/^\[tool:\s*[\w.-]+\]$/i.test(content)) return false;
+  if (/^\(?no output\)?$/i.test(content)) return false;
+  return true;
 }
 
 function useTip(el) { inputEl.value = el.textContent; inputEl.focus(); }
@@ -1117,11 +1208,47 @@ function renderInlineMarkdown(text) {
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+    .replace(/&lt;(https?:\/\/[^&\s]+)&gt;/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
 }
 
+function trimUrlTail(rawUrl) {
+  let url = rawUrl;
+  let tail = '';
+  while (url) {
+    const ch = url.slice(-1);
+    if (/[.,;:!?]/.test(ch)) {
+      tail = ch + tail;
+      url = url.slice(0, -1);
+      continue;
+    }
+    if (ch === ')' && (url.match(/\)/g) || []).length > (url.match(/\(/g) || []).length) {
+      tail = ch + tail;
+      url = url.slice(0, -1);
+      continue;
+    }
+    if (ch === ']' && (url.match(/\]/g) || []).length > (url.match(/\[/g) || []).length) {
+      tail = ch + tail;
+      url = url.slice(0, -1);
+      continue;
+    }
+    break;
+  }
+  return { url, tail };
+}
+
+function normalizeUrlBoundaries(content) {
+  return (content || '').replace(
+    /(https?:\/\/[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+)(?=[\u3400-\u9FFF\uF900-\uFAFF\u3000-\u303F\uFF00-\uFFEF])/g,
+    match => {
+      const { url, tail } = trimUrlTail(match);
+      return url ? `<${url}>${tail}` : match;
+    }
+  );
+}
+
 function normalizeMarkdown(content) {
-  return (content || '').replace(/^(#{1,4})([^\s#])/gm, '$1 $2');
+  return normalizeUrlBoundaries(content).replace(/^(#{1,4})([^\s#])/gm, '$1 $2');
 }
 
 function extractMath(content) {
@@ -1523,14 +1650,14 @@ inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
-sendBtn.addEventListener('click', () => { if (isStreaming) stopStreaming(); else sendMessage(); });
+sendBtn.addEventListener('click', () => { if (isWorkspaceStreaming()) stopStreaming(activeWorkspace); else sendMessage(); });
 
-async function readOpenAIStream(cfg, messages, onDelta) {
+async function readOpenAIStream(cfg, messages, onDelta, signal) {
   const resp = await fetch(cfg.apiUrl, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${cfg.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ model: cfg.modelName, messages, stream: true }),
-    signal: abortController.signal,
+    signal,
   });
 
   if (!resp.ok) { const e = await resp.text(); throw new Error(`HTTP ${resp.status}: ${e.slice(0, 200)}`); }
@@ -1557,20 +1684,19 @@ async function readOpenAIStream(cfg, messages, onDelta) {
   }
 }
 
-async function readCliStream(prompt, messages, onDelta, onSession) {
-  const activeSession = getActiveSession();
+async function readCliStream(prompt, messages, context, onDelta, onSession) {
   const resp = await fetch('/api/cli/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      sessionId: getActiveId(),
-      projectId: getActiveProjectId(),
-      piSessionPath: activeSession?.piSessionPath || '',
-      mode: isAgentWorkspace() ? 'task' : activeRunMode,
+      sessionId: context.sessionId,
+      projectId: context.projectId,
+      piSessionPath: context.piSessionPath || '',
+      mode: context.mode,
       prompt,
       messages,
     }),
-    signal: abortController.signal,
+    signal: context.signal,
   });
 
   const reader = resp.body.getReader(), decoder = new TextDecoder();
@@ -1592,7 +1718,8 @@ async function readCliStream(prompt, messages, onDelta, onSession) {
   }
 }
 
-async function sendMessage() {
+async function legacySendMessage() {
+  return sendMessage();
   const text = inputEl.value.trim();
   if (!text || isStreaming) return;
   const cfg = getConfig();
@@ -1641,7 +1768,9 @@ async function sendMessage() {
 
   try {
     abortController = new AbortController();
-    const messages = session.messages.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
+    const messages = session.messages
+      .filter(shouldRenderMessage)
+      .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
     const onDelta = delta => {
       if (!fullContent) {
         firstDeltaAt = Date.now();
@@ -1691,7 +1820,192 @@ async function sendMessage() {
   sendBtn.classList.remove('stop'); sendBtn.title = '发送';
 }
 
-function stopStreaming() { if (abortController) abortController.abort(); }
+function legacyStopStreaming() { return stopStreaming(); }
+
+async function sendMessage() {
+  const text = inputEl.value.trim();
+  const requestWorkspace = activeWorkspace;
+  const requestIsAgent = requestWorkspace === AGENT_SCOPE;
+  if (!text || isWorkspaceStreaming(requestWorkspace)) return;
+
+  const cfg = getConfig(requestWorkspace);
+  if (!cfg || (requestIsAgent ? !isCliConfig(cfg) : isCliConfig(cfg))) {
+    document.querySelector('[data-tab=config]')?.click();
+    setConfigScope(requestWorkspace);
+    return;
+  }
+
+  let session = getActiveSession();
+  if (!session) {
+    createSession();
+    session = getActiveSession();
+  }
+  if (!session) return;
+
+  session.kind = requestWorkspace;
+  session.projectId = requestIsAgent ? (session.projectId || getActiveProjectId()) : null;
+  session.mode = requestIsAgent ? 'task' : 'chat';
+  session.status = requestIsAgent ? 'running' : 'idle';
+
+  const requestSessionId = getActiveId();
+  const requestProjectId = session.projectId;
+  const requestRunMode = requestIsAgent ? 'task' : activeRunMode;
+  const requestPiSessionPath = session.piSessionPath || '';
+  const responseKind = requestWorkspace;
+  const responseProjectId = session.projectId;
+
+  const userCreated = Date.now();
+  session.messages.push({ role: 'user', content: text, created: userCreated });
+  const patch = {
+    kind: session.kind,
+    projectId: session.projectId,
+    mode: session.mode,
+    status: session.status,
+    messages: session.messages,
+  };
+  if (session.messages.filter(m => m.role === 'user').length === 1) {
+    patch.title = text.length > 30 ? text.slice(0, 30) + '...' : text;
+    patch.created = session.created;
+  }
+  updateSessionById(requestSessionId, patch);
+  renderSessionList();
+
+  appendBubble('user', text, true, { created: userCreated, kind: responseKind, projectId: responseProjectId });
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  inputEl.focus();
+
+  const controller = new AbortController();
+  setWorkspaceStreaming(requestWorkspace, true, controller);
+
+  const thinkingText = requestIsAgent ? 'Agent 正在执行任务' : '模型正在思考';
+  const responseStarted = Date.now();
+  let firstDeltaAt = null;
+  let fullContent = '';
+  const responseMeta = { created: responseStarted, kind: responseKind, projectId: responseProjectId, pending: true };
+  const botBubble = appendBubble('assistant', thinkingText, true, responseMeta);
+  botBubble.classList.add('streaming', 'thinking');
+  const renderBotStream = createRichStreamRenderer(botBubble, responseMeta);
+
+  inFlightByScope[requestWorkspace] = {
+    sessionId: requestSessionId,
+    content: '',
+    started: responseStarted,
+    firstDeltaAt: null,
+    thinkingText,
+    kind: responseKind,
+    projectId: responseProjectId,
+    bubble: botBubble,
+    renderer: renderBotStream,
+  };
+
+  try {
+    const messages = session.messages
+      .filter(shouldRenderMessage)
+      .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
+
+    const onDelta = delta => {
+      const flight = inFlightByScope[requestWorkspace];
+      if (!fullContent) {
+        firstDeltaAt = Date.now();
+        if (flight) flight.firstDeltaAt = firstDeltaAt;
+        if (flight?.bubble?.isConnected) {
+          flight.bubble.classList.remove('thinking');
+          setBubbleMeta(flight.bubble, 'assistant', {
+            created: responseStarted,
+            thinkingMs: firstDeltaAt - responseStarted,
+            kind: responseKind,
+            projectId: responseProjectId,
+          });
+        }
+      }
+      fullContent += delta;
+      if (flight) flight.content = fullContent;
+      if (flight?.renderer && flight?.bubble?.isConnected) flight.renderer(fullContent);
+    };
+
+    const onPiSession = piSession => {
+      const sessions = getSessions();
+      const target = requestSessionId && sessions[requestSessionId];
+      if (!target) return;
+      target.piSessionPath = piSession.path || target.piSessionPath || '';
+      target.piSessionId = piSession.id || target.piSessionId || '';
+      target.source = 'pi';
+      saveSessions(sessions);
+    };
+
+    if (requestIsAgent) {
+      await readCliStream(
+        text,
+        messages,
+        {
+          sessionId: requestSessionId,
+          projectId: requestProjectId,
+          piSessionPath: requestPiSessionPath,
+          mode: requestRunMode,
+          signal: controller.signal,
+        },
+        onDelta,
+        onPiSession
+      );
+    } else {
+      await readOpenAIStream(cfg, messages, onDelta, controller.signal);
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      fullContent += '\n\n[已停止]';
+    } else {
+      const flight = inFlightByScope[requestWorkspace];
+      if (flight?.bubble?.isConnected) {
+        flight.bubble.classList.remove('streaming', 'thinking');
+        flight.bubble.closest('.msg')?.classList.add('error');
+        flight.bubble.textContent = `请求失败: ${err.message}`;
+      }
+    }
+  }
+
+  const flight = inFlightByScope[requestWorkspace];
+  if (flight?.bubble?.isConnected) flight.bubble.classList.remove('streaming', 'thinking');
+
+  if (fullContent) {
+    const assistantCreated = firstDeltaAt || Date.now();
+    const thinkingMs = Math.max(0, assistantCreated - responseStarted);
+    if (flight?.renderer && flight?.bubble?.isConnected) {
+      flight.renderer(fullContent, true);
+      setBubbleMeta(flight.bubble, 'assistant', {
+        created: assistantCreated,
+        thinkingMs,
+        kind: responseKind,
+        projectId: responseProjectId,
+      });
+    }
+
+    session = getSessionById(requestSessionId);
+    if (session) {
+      session.messages.push({ role: 'assistant', content: fullContent, created: assistantCreated, thinkingMs });
+      updateSessionById(requestSessionId, { messages: session.messages, status: 'idle' });
+    }
+  } else if (flight?.bubble?.isConnected && (!flight.bubble.textContent.trim() || flight.bubble.textContent.trim() === thinkingText)) {
+    flight.bubble.textContent = '已完成，但没有返回内容。';
+    setBubbleMeta(flight.bubble, 'assistant', {
+      created: Date.now(),
+      thinkingMs: Date.now() - responseStarted,
+      kind: responseKind,
+      projectId: responseProjectId,
+    });
+  }
+
+  inFlightByScope[requestWorkspace] = null;
+  setWorkspaceStreaming(requestWorkspace, false);
+  updateSessionById(requestSessionId, { status: 'idle' });
+  if (activeWorkspace === requestWorkspace && getActiveId() === requestSessionId) renderMessages();
+  else markWorkspaceUnread(requestWorkspace);
+}
+
+function stopStreaming(scope = activeWorkspace) {
+  const controller = abortControllersByScope[scope];
+  if (controller) controller.abort();
+}
 
 // Init
 async function initApp() {

@@ -644,16 +644,32 @@ def pi_content_to_text(content):
         item_type = item.get("type")
         if item_type == "text" and item.get("text"):
             parts.append(str(item["text"]))
-        elif item_type == "toolCall":
-            name = item.get("name") or "tool"
-            parts.append(f"[tool: {name}]")
     return "\n".join(part for part in parts if part).strip()
+
+
+def pi_content_tool_calls(content):
+    if not isinstance(content, list):
+        return []
+    calls = []
+    for item in content:
+        if not isinstance(item, dict) or item.get("type") != "toolCall":
+            continue
+        args = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
+        calls.append(
+            {
+                "id": item.get("id") or "",
+                "name": item.get("name") or "tool",
+                "command": args.get("command") or "",
+            }
+        )
+    return calls
 
 
 def parse_pi_session_file(path, project_id):
     fallback_created = int(path.stat().st_mtime * 1000)
     session_meta = {}
     messages = []
+    tool_events = []
 
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
@@ -674,12 +690,31 @@ def parse_pi_session_file(path, project_id):
                     continue
                 message = record.get("message") or {}
                 role = message.get("role") or "assistant"
+                created = parse_iso_ms(record.get("timestamp"), fallback_created)
+
+                if role == "toolResult":
+                    tool_events.append(
+                        {
+                            "type": "result",
+                            "toolCallId": message.get("toolCallId") or "",
+                            "name": message.get("toolName") or "tool",
+                            "isError": bool(message.get("isError")),
+                            "created": created,
+                        }
+                    )
+                    continue
+
+                tool_calls = pi_content_tool_calls(message.get("content"))
+                if tool_calls:
+                    for call in tool_calls:
+                        tool_events.append({**call, "type": "call", "created": created})
+                    continue
+
                 if role not in {"user", "assistant", "system"}:
                     role = "assistant"
                 content = pi_content_to_text(message.get("content"))
                 if not content:
                     continue
-                created = parse_iso_ms(record.get("timestamp"), fallback_created)
                 messages.append({"role": role, "content": content, "created": created})
     except OSError:
         return None
@@ -700,6 +735,7 @@ def parse_pi_session_file(path, project_id):
         "status": "idle",
         "created": created,
         "messages": messages,
+        "toolEvents": tool_events,
         "piSessionPath": info["path"],
         "piSessionId": info["id"],
         "source": "pi",
