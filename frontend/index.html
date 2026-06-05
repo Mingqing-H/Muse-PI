@@ -39,6 +39,9 @@
 
 <div class="view active" id="chatView">
   <div class="chat-layout">
+    <button class="sidebar-toggle" id="sidebarToggle" type="button" title="隐藏会话窗格" aria-label="隐藏会话窗格">
+      <span></span>
+    </button>
     <div class="sidebar" id="sidebar">
       <div class="project-switcher" id="projectSwitcher">
         <label>当前项目</label>
@@ -64,7 +67,7 @@
         </div>
         <div class="input-row">
           <textarea id="input" rows="1" placeholder="输入消息..."></textarea>
-          <button class="send-btn" id="sendBtn" title="发送">&#8593;</button>
+          <button class="send-btn" id="sendBtn" title="发送"></button>
         </div>
         <div class="input-hint">Enter 发送 · Shift+Enter 换行</div>
       </div>

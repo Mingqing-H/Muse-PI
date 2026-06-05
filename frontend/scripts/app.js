@@ -18,6 +18,7 @@ const PROJECTS_KEY = 'llm_projects';
 const ACTIVE_PROJECT_KEY = 'llm_active_project';
 const SESSIONS_KEY = 'llm_sessions';
 const ACTIVE_KEY = 'llm_active_session';
+const SIDEBAR_COLLAPSED_KEY = 'llm_sidebar_collapsed';
 const $ = id => document.getElementById(id);
 let USE_DATABASE = location.protocol !== 'file:';
 
@@ -193,14 +194,21 @@ function setWorkspaceStreaming(scope, value, controller = null) {
 function updateSendButtonState() {
   if (!sendBtn) return;
   if (isWorkspaceStreaming(activeWorkspace)) {
-    sendBtn.innerHTML = '&#9632;';
+    sendBtn.innerHTML = sendButtonIcon('stop') + '<span>停止</span>';
     sendBtn.classList.add('stop');
     sendBtn.title = '停止';
   } else {
-    sendBtn.innerHTML = '&#8593;';
+    sendBtn.innerHTML = sendButtonIcon('send') + '<span>发送</span>';
     sendBtn.classList.remove('stop');
     sendBtn.title = '发送';
   }
+}
+
+function sendButtonIcon(kind = 'send') {
+  if (kind === 'stop') {
+    return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"></rect></svg>';
+  }
+  return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11.5 20 4l-7.5 16-1.8-6.7L4 11.5Z"></path><path d="m11 13 4.8-4.8"></path></svg>';
 }
 
 function renderTabUnread() {
@@ -1095,6 +1103,21 @@ const messagesEl = $('messages');
 const inputEl = $('input');
 const sendBtn = $('sendBtn');
 const inputArea = $('inputArea');
+const chatLayoutEl = document.querySelector('.chat-layout');
+const sidebarToggle = $('sidebarToggle');
+
+function setSidebarCollapsed(collapsed, persist = true) {
+  if (!chatLayoutEl || !sidebarToggle) return;
+  chatLayoutEl.classList.toggle('sidebar-collapsed', collapsed);
+  sidebarToggle.title = collapsed ? '显示会话窗格' : '隐藏会话窗格';
+  sidebarToggle.setAttribute('aria-label', sidebarToggle.title);
+  if (persist) localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0');
+}
+
+if (sidebarToggle) {
+  setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1', false);
+  sidebarToggle.onclick = () => setSidebarCollapsed(!chatLayoutEl?.classList.contains('sidebar-collapsed'));
+}
 
 async function refreshChat() {
   updateModelBadge();
@@ -1622,7 +1645,11 @@ function appendBubble(role, content, animate = true, meta = {}) {
 
   const avatar = document.createElement('div');
   avatar.className = 'avatar';
-  avatar.textContent = role === 'user' ? '你' : 'AI';
+  if (role === 'user') {
+    avatar.innerHTML = '<span class="user-face" aria-hidden="true"></span>';
+  } else {
+    avatar.innerHTML = '<span class="bot-face" aria-hidden="true"><span></span></span>';
+  }
 
   const bubble = document.createElement('div');
   bubble.className = 'bubble';
@@ -1657,6 +1684,7 @@ inputEl.addEventListener('keydown', e => {
 });
 
 sendBtn.addEventListener('click', () => { if (isWorkspaceStreaming()) stopStreaming(activeWorkspace); else sendMessage(); });
+updateSendButtonState();
 
 async function readOpenAIStream(cfg, messages, onDelta, signal) {
   const resp = await fetch(cfg.apiUrl, {
@@ -1760,7 +1788,7 @@ async function legacySendMessage() {
   inputEl.value = ''; inputEl.style.height = 'auto'; inputEl.focus();
 
   isStreaming = true;
-  sendBtn.innerHTML = '&#9632;';
+  sendBtn.innerHTML = sendButtonIcon('stop') + '<span>停止</span>';
   sendBtn.classList.add('stop'); sendBtn.title = '停止';
 
   const thinkingText = isAgentWorkspace() ? 'Agent 正在执行任务' : '模型正在思考';
@@ -1822,7 +1850,7 @@ async function legacySendMessage() {
   isStreaming = false;
   abortController = null;
   updateActiveSession({ status: 'idle' });
-  sendBtn.innerHTML = '&#8593;';
+  sendBtn.innerHTML = sendButtonIcon('send') + '<span>发送</span>';
   sendBtn.classList.remove('stop'); sendBtn.title = '发送';
 }
 
