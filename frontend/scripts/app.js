@@ -38,8 +38,7 @@ let piModelOptionsError = '';
 let agentModelSearchValue = '';
 const syncedPiProjects = new Set();
 const streamingByScope = { [CHAT_SCOPE]: false, [AGENT_SCOPE]: false };
-const abortControllersByScope = { [CHAT_SCOPE]: null, [AGENT_SCOPE]: null };
-const inFlightByScope = { [CHAT_SCOPE]: null, [AGENT_SCOPE]: null };
+const inFlightByScope = { [CHAT_SCOPE]: {}, [AGENT_SCOPE]: {} };
 const unreadScopes = new Set();
 
 async function apiRequest(path, options = {}) {
@@ -186,18 +185,47 @@ function clearPersistedSessions() {
 }
 
 function isWorkspaceStreaming(scope = activeWorkspace) {
-  return !!streamingByScope[scope];
+  return Object.keys(inFlightByScope[scope] || {}).length > 0;
 }
 
-function setWorkspaceStreaming(scope, value, controller = null) {
-  streamingByScope[scope] = !!value;
-  abortControllersByScope[scope] = value ? controller : null;
+function getSessionFlight(scope = activeWorkspace, id = getActiveId()) {
+  return id ? inFlightByScope[scope]?.[id] || null : null;
+}
+
+function isActiveSessionStreaming(scope = activeWorkspace) {
+  return !!getSessionFlight(scope, getActiveId());
+}
+
+function isSessionRunning(id) {
+  const session = getSessionById(id);
+  return !!session && (
+    session.status === 'running'
+    || Object.values(inFlightByScope).some(flights => !!flights?.[id])
+  );
+}
+
+function setWorkspaceStreaming(scope) {
+  streamingByScope[scope] = isWorkspaceStreaming(scope);
   updateSendButtonState();
   updateAgentModelPicker();
+  renderSessionList();
 }
 
 function updateSendButtonState() {
   if (!sendBtn) return;
+  const activeStreaming = isActiveSessionStreaming(activeWorkspace);
+  sendBtn.disabled = false;
+  sendBtn.classList.remove('background-busy');
+  if (activeStreaming) {
+    sendBtn.innerHTML = sendButtonIcon('stop') + '<span>停止</span>';
+    sendBtn.classList.add('stop');
+    sendBtn.title = '停止当前会话';
+  } else {
+    sendBtn.innerHTML = sendButtonIcon('send') + '<span>发送</span>';
+    sendBtn.classList.remove('stop');
+    sendBtn.title = '发送';
+  }
+  return;
   if (isWorkspaceStreaming(activeWorkspace)) {
     sendBtn.innerHTML = sendButtonIcon('stop') + '<span>停止</span>';
     sendBtn.classList.add('stop');
@@ -711,7 +739,7 @@ function updateAgentModelPicker() {
   if (!visible) closeAgentModelMenu();
   const model = getAgentModelName();
   label.textContent = model;
-  trigger.disabled = isWorkspaceStreaming(AGENT_SCOPE);
+  trigger.disabled = isAgentWorkspace() && isActiveSessionStreaming(AGENT_SCOPE);
   trigger.title = `Pi Agent 模型：${model}`;
   if (picker.classList.contains('open')) renderAgentModelMenu();
 }
@@ -1078,6 +1106,7 @@ function createSession() {
   };
   saveSessions(s); setActiveId(id);
   renderSessionList(); renderMessages();
+  updateSendButtonState();
   return id;
 }
 
@@ -1092,6 +1121,10 @@ function deleteSession(id) {
 }
 
 async function deleteSessionWithPiOption(id) {
+  if (isSessionRunning(id)) {
+    showToast('会话仍在运行，结束后再删除。', 'var(--muted)');
+    return;
+  }
   const session = getSessions()[id];
   if (!session) return;
   const piSessionPath = getSessionKind(session) === AGENT_SCOPE ? session.piSessionPath : '';
@@ -1113,6 +1146,51 @@ async function deleteSessionWithPiOption(id) {
 
   deleteSession(id);
   showToast(deletedPiSession ? '会话和 Pi Agent 记录已删除' : '会话已删除', 'var(--muted)');
+}
+
+async function clearVisibleSessionsWithPiOption() {
+  const ids = getVisibleSessionIds();
+  if (ids.length === 0) return;
+  if (ids.some(id => isSessionRunning(id))) {
+    showToast('有会话仍在运行，结束后再清空。', 'var(--muted)');
+    return;
+  }
+
+  const sessions = getSessions();
+  const agentProjectIds = new Set();
+  let deletedPiCount = 0;
+
+  for (const id of ids) {
+    const session = sessions[id];
+    if (!session) continue;
+    const isAgentSession = getSessionKind(session) === AGENT_SCOPE;
+    const piSessionPath = isAgentSession ? session.piSessionPath : '';
+    if (isAgentSession) agentProjectIds.add(session.projectId || 'default');
+
+    if (piSessionPath && USE_DATABASE) {
+      try {
+        await deletePiSessionFile(piSessionPath);
+        deletedPiCount += 1;
+      } catch (err) {
+        console.error(err);
+        if (err.status !== 404) {
+          showToast('Pi Agent 会话清空失败', 'var(--rose)');
+          return;
+        }
+      }
+    }
+  }
+
+  ids.forEach(id => { delete sessions[id]; });
+  saveSessions(sessions);
+  agentProjectIds.forEach(projectId => syncedPiProjects.delete(projectId));
+
+  const nextIds = getVisibleSessionIds();
+  setActiveId(nextIds.length ? nextIds[0] : null);
+  renderProjects();
+  renderSessionList();
+  renderMessages();
+  showToast(deletedPiCount > 0 ? `已清空 ${ids.length} 个会话，并删除 ${deletedPiCount} 条 Pi Agent 记录` : `已清空 ${ids.length} 个会话`, 'var(--muted)');
 }
 
 function getActiveSession() {
@@ -1140,8 +1218,12 @@ function updateSessionById(id, patch) {
 }
 
 function switchSession(id) {
-  if (isWorkspaceStreaming()) return;
-  setActiveId(id); renderSessionList(); renderMessages();
+  const session = getSessionById(id);
+  if (session?.completedUnread) updateSessionById(id, { completedUnread: false });
+  setActiveId(id);
+  renderSessionList();
+  renderMessages();
+  updateSendButtonState();
 }
 
 function renderSessionList() {
@@ -1159,7 +1241,9 @@ function renderSessionList() {
   keys.forEach(id => {
     const s = sessions[id];
     const item = document.createElement('div');
-    item.className = 'session-item' + (id === activeId ? ' active' : '');
+    const running = isSessionRunning(id);
+    const completedUnread = !!s.completedUnread && !running;
+    item.className = 'session-item' + (id === activeId ? ' active' : '') + (running ? ' running' : '') + (completedUnread ? ' completed-unread' : '');
 
     const title = document.createElement('div');
     title.className = 'session-title';
@@ -1169,6 +1253,11 @@ function renderSessionList() {
     const time = document.createElement('div');
     time.className = 'session-time';
     time.textContent = formatTime(s.created);
+
+    const state = document.createElement('span');
+    state.className = 'session-state';
+    state.title = running ? '正在运行' : (completedUnread ? '已完成' : '');
+    state.setAttribute('aria-hidden', 'true');
 
     const del = document.createElement('button');
     del.className = 'session-del';
@@ -1182,6 +1271,7 @@ function renderSessionList() {
     item.onclick = () => switchSession(id);
     item.appendChild(title);
     item.appendChild(time);
+    item.appendChild(state);
     item.appendChild(del);
     list.appendChild(item);
   });
@@ -1234,9 +1324,22 @@ function setBubbleMeta(bubble, role, meta = {}) {
   metaEl.classList.toggle('empty', !text);
 }
 
-$('btnNewSession').onclick = () => { if (isWorkspaceStreaming()) return; createSession(); $('input').focus(); };
+$('btnNewSession').onclick = () => { createSession(); $('input').focus(); updateSendButtonState(); };
 
 $('btnClearAll').onclick = () => {
+  const count = getVisibleSessionIds().length;
+  if (count === 0) return;
+  showConfirm(`确定删除当前列表中的 ${count} 个会话？此操作不可撤销。`, () => {
+    clearVisibleSessionsWithPiOption().catch(err => {
+      console.error(err);
+      showToast('会话清空失败', 'var(--rose)');
+    });
+  });
+  return;
+  if (Object.keys(getSessions()).some(id => isSessionRunning(id))) {
+    showToast('有会话仍在运行，结束后再清空。', 'var(--muted)');
+    return;
+  }
   showConfirm('确定删除所有会话？此操作不可撤销。', () => {
     clearPersistedSessions();
     renderSessionList(); renderMessages();
@@ -1367,8 +1470,8 @@ function renderMessages() {
 }
 
 function renderInFlightMessage(scope, sessionId) {
-  const flight = inFlightByScope[scope];
-  if (!flight || flight.sessionId !== sessionId) return;
+  const flight = getSessionFlight(scope, sessionId);
+  if (!flight) return;
   const bubble = appendBubble('assistant', flight.content || flight.thinkingText, false, {
     created: flight.started,
     thinkingMs: flight.firstDeltaAt ? flight.firstDeltaAt - flight.started : undefined,
@@ -1861,7 +1964,7 @@ inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
 
-sendBtn.addEventListener('click', () => { if (isWorkspaceStreaming()) stopStreaming(activeWorkspace); else sendMessage(); });
+sendBtn.addEventListener('click', () => { if (isActiveSessionStreaming()) stopStreaming(activeWorkspace, getActiveId()); else sendMessage(); });
 updateSendButtonState();
 
 async function readOpenAIStream(cfg, messages, onDelta, signal) {
@@ -2039,7 +2142,8 @@ async function sendMessage() {
   const text = inputEl.value.trim();
   const requestWorkspace = activeWorkspace;
   const requestIsAgent = requestWorkspace === AGENT_SCOPE;
-  if (!text || isWorkspaceStreaming(requestWorkspace)) return;
+  if (!text) return;
+  if (isActiveSessionStreaming(requestWorkspace)) return;
 
   const cfg = getConfig(requestWorkspace);
   if (!cfg || (requestIsAgent ? !isCliConfig(cfg) : isCliConfig(cfg))) {
@@ -2058,7 +2162,7 @@ async function sendMessage() {
   session.kind = requestWorkspace;
   session.projectId = requestIsAgent ? (session.projectId || getActiveProjectId()) : null;
   session.mode = requestIsAgent ? 'task' : 'chat';
-  session.status = requestIsAgent ? 'running' : 'idle';
+  session.status = 'running';
 
   const requestSessionId = getActiveId();
   const requestProjectId = session.projectId;
@@ -2089,7 +2193,6 @@ async function sendMessage() {
   inputEl.focus();
 
   const controller = new AbortController();
-  setWorkspaceStreaming(requestWorkspace, true, controller);
 
   const thinkingText = requestIsAgent ? 'Agent 正在执行任务' : '模型正在思考';
   const responseStarted = Date.now();
@@ -2100,8 +2203,9 @@ async function sendMessage() {
   botBubble.classList.add('streaming', 'thinking');
   const renderBotStream = createRichStreamRenderer(botBubble, responseMeta);
 
-  inFlightByScope[requestWorkspace] = {
+  inFlightByScope[requestWorkspace][requestSessionId] = {
     sessionId: requestSessionId,
+    controller,
     content: '',
     started: responseStarted,
     firstDeltaAt: null,
@@ -2111,6 +2215,7 @@ async function sendMessage() {
     bubble: botBubble,
     renderer: renderBotStream,
   };
+  setWorkspaceStreaming(requestWorkspace);
 
   try {
     const messages = session.messages
@@ -2118,7 +2223,7 @@ async function sendMessage() {
       .map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.content }));
 
     const onDelta = delta => {
-      const flight = inFlightByScope[requestWorkspace];
+      const flight = getSessionFlight(requestWorkspace, requestSessionId);
       if (!fullContent) {
         firstDeltaAt = Date.now();
         if (flight) flight.firstDeltaAt = firstDeltaAt;
@@ -2169,7 +2274,7 @@ async function sendMessage() {
     if (err.name === 'AbortError') {
       fullContent += '\n\n[已停止]';
     } else {
-      const flight = inFlightByScope[requestWorkspace];
+      const flight = getSessionFlight(requestWorkspace, requestSessionId);
       if (flight?.bubble?.isConnected) {
         flight.bubble.classList.remove('streaming', 'thinking');
         flight.bubble.closest('.msg')?.classList.add('error');
@@ -2178,7 +2283,7 @@ async function sendMessage() {
     }
   }
 
-  const flight = inFlightByScope[requestWorkspace];
+  const flight = getSessionFlight(requestWorkspace, requestSessionId);
   if (flight?.bubble?.isConnected) flight.bubble.classList.remove('streaming', 'thinking');
 
   if (fullContent) {
@@ -2209,15 +2314,18 @@ async function sendMessage() {
     });
   }
 
-  inFlightByScope[requestWorkspace] = null;
-  setWorkspaceStreaming(requestWorkspace, false);
-  updateSessionById(requestSessionId, { status: 'idle' });
+  delete inFlightByScope[requestWorkspace][requestSessionId];
+  setWorkspaceStreaming(requestWorkspace);
+  const finishedAway = activeWorkspace !== requestWorkspace || getActiveId() !== requestSessionId;
+  updateSessionById(requestSessionId, { status: 'idle', completedUnread: finishedAway });
+  renderSessionList();
+  updateSendButtonState();
   if (activeWorkspace === requestWorkspace && getActiveId() === requestSessionId) renderMessages();
   else markWorkspaceUnread(requestWorkspace);
 }
 
-function stopStreaming(scope = activeWorkspace) {
-  const controller = abortControllersByScope[scope];
+function stopStreaming(scope = activeWorkspace, sessionId = getActiveId()) {
+  const controller = getSessionFlight(scope, sessionId)?.controller;
   if (controller) controller.abort();
 }
 

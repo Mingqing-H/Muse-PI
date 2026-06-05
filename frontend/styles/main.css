@@ -965,6 +965,39 @@ body {
   letter-spacing: 0.04em;
 }
 
+.session-item .session-state {
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.session-item.running .session-state {
+  opacity: 0.52;
+  border: 1px solid oklch(90% 0.08 90 / 0.52);
+  border-top-color: transparent;
+  animation: sessionSpin 0.9s linear infinite;
+}
+
+.session-item.completed-unread .session-state {
+  opacity: 1;
+  width: 8px;
+  height: 8px;
+  background: #ffcf61;
+  box-shadow: 0 0 12px oklch(82% 0.14 84 / 0.72);
+}
+
+.session-item.running .session-del,
+.session-item.completed-unread .session-del {
+  display: none;
+}
+
+@keyframes sessionSpin {
+  to { transform: rotate(360deg); }
+}
+
 .session-item .session-del {
   display: none; background: none; border: none;
   color: var(--muted); cursor: pointer;
@@ -974,6 +1007,8 @@ body {
 }
 
 .session-item:hover .session-del { display: block; }
+.session-item.running:hover .session-del,
+.session-item.completed-unread:hover .session-del { display: none; }
 .session-item .session-del:hover { color: var(--rose); }
 
 /* ── Chat main ── */
@@ -2474,6 +2509,19 @@ body {
 .send-btn.stop {
   color: #260c0c;
   background: linear-gradient(135deg, #ffd6cf, #ef9289);
+}
+
+.send-btn.background-busy,
+.send-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
+  transform: none;
+  filter: saturate(0.78);
+}
+
+.send-btn.background-busy:hover,
+.send-btn:disabled:hover {
+  transform: none;
 }
 
 .msg .avatar {
