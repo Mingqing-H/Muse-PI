@@ -839,16 +839,17 @@ def list_pi_session_projects():
     for session_dir in dirs:
         try:
             jsonl_files = list(session_dir.glob("*.jsonl"))
-            if not jsonl_files:
-                continue
             stats = [path.stat() for path in jsonl_files]
+            dir_stat = session_dir.stat()
         except OSError:
             continue
 
         cwd = pi_project_cwd_from_dir(session_dir)
         name = Path(cwd).name or cwd or session_dir.name
-        updated = int(max(stat.st_mtime for stat in stats) * 1000)
-        created = int(min(stat.st_mtime for stat in stats) * 1000)
+        updated_source = max((stat.st_mtime for stat in stats), default=dir_stat.st_mtime)
+        created_source = min((stat.st_mtime for stat in stats), default=dir_stat.st_ctime)
+        updated = int(updated_source * 1000)
+        created = int(created_source * 1000)
         project_id = pi_project_id_for_dir(session_dir)
         projects[project_id] = {
             "id": project_id,
