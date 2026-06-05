@@ -566,6 +566,11 @@ body {
   color: var(--bg);
 }
 
+.preset-btn.configured:not(.active) {
+  border-color: oklch(72% 0.12 155 / 0.55);
+  color: var(--fg-cream);
+}
+
 .field { margin-bottom: 18px; }
 .field.hidden { display: none; }
 
@@ -679,19 +684,6 @@ body {
   border-color: var(--muted);
   color: var(--fg-cream);
 }
-
-.go-chat {
-  display: block; text-align: center;
-  margin-top: 20px;
-  color: var(--muted);
-  font-family: var(--font-body); font-size: 11px; font-weight: 600;
-  letter-spacing: 0.08em;
-  cursor: pointer; background: none; border: none;
-  transition: color 0.5s var(--ease-out-expo);
-  width: 100%;
-}
-
-.go-chat:hover { color: var(--accent); }
 
 /* ── Chat layout ── */
 .chat-layout { display: flex; flex: 1; overflow: hidden; }
@@ -1797,7 +1789,6 @@ body {
   .presets { margin-bottom: 18px; }
   .field { margin-bottom: 14px; }
   .actions { margin-top: 18px; }
-  .go-chat { margin-top: 16px; }
 }
 
 /* Reference-image UI finish: soft anime light, glass controls, rounded chat surfaces */
@@ -2364,10 +2355,6 @@ body {
 
 .btn {
   height: 46px;
-}
-
-.go-chat {
-  color: oklch(94% 0.07 150 / 0.74);
 }
 
 .toast {

@@ -300,10 +300,12 @@ function presetIndicesForScope(scope = activeConfigScope) {
 
 function renderPresets() {
   presetsEl.innerHTML = '';
+  const store = toConfigStore(configCache);
   presetIndicesForScope().forEach(i => {
     const p = PRESETS[i];
     const btn = document.createElement('button');
-    btn.className = 'preset-btn';
+    const hasConfig = !!store.providers[p.name];
+    btn.className = 'preset-btn' + (hasConfig ? ' configured' : '');
     btn.dataset.index = String(i);
     btn.textContent = p.name;
     btn.onclick = () => applyPreset(i);
@@ -318,7 +320,6 @@ function setConfigScope(scope) {
   });
   if ($('configHeaderTitle')) $('configHeaderTitle').innerHTML = scope === AGENT_SCOPE ? 'Agent <em>配置</em>' : '对话 <em>配置</em>';
   if ($('configHeaderText')) $('configHeaderText').textContent = scope === AGENT_SCOPE ? '配置用于本地项目操作的 Pi Agent' : '配置用于普通对话的 API 模型';
-  if ($('goChatBtn')) $('goChatBtn').innerHTML = scope === AGENT_SCOPE ? '保存并进入 Agent &rarr;' : '保存并开始对话 &rarr;';
   renderPresets();
   loadConfig();
 }
@@ -559,7 +560,7 @@ function saveConfig() {
   updateModelDatalist(presetIndex);
   updatePiCliPathStatus();
   refreshPiCliInfo();
-  updateModelBadge(); showToast('配置已保存', 'var(--accent)'); return true;
+  updateModelBadge(); renderPresets(); showToast('配置已保存', 'var(--accent)'); return true;
 }
 
 $('saveBtn').onclick = saveConfig;
@@ -574,19 +575,14 @@ $('clearBtn').onclick = () => {
   else clearPersistedConfig();
   $('apiUrl').value = ''; $('apiKey').value = ''; $('modelName').value = '';
   document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
-  updateModelBadge(); showToast('配置已清除', 'var(--muted)');
+  updateModelBadge(); renderPresets(); showToast('配置已清除', 'var(--muted)');
 };
 $('toggleKey').onclick = () => { const i = $('apiKey'); i.type = i.type === 'password' ? 'text' : 'password'; };
 $('apiUrl').addEventListener('input', updatePiCliPathStatus);
-$('goChatBtn').onclick = () => {
-  if (!saveConfig()) return;
-  const target = activeConfigScope === AGENT_SCOPE ? AGENT_SCOPE : CHAT_SCOPE;
-  document.querySelectorAll(`.tab-btn[data-tab="${target}"]`).forEach(x => x.click());
-};
 
 function updateModelBadge() {
   const c = getConfig(), b = $('modelBadge');
-  if (c && c.modelName) { b.textContent = isCliConfig(c) ? `Pi CLI · ${c.modelName}` : c.modelName; b.classList.remove('empty'); }
+  if (c && c.modelName) { b.textContent = isCliConfig(c) ? 'Pi CLI' : c.modelName; b.classList.remove('empty'); }
   else { b.textContent = '未配置'; b.classList.add('empty'); }
 }
 
