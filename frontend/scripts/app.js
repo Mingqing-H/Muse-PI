@@ -272,7 +272,10 @@ document.querySelectorAll('.tab-btn').forEach(b => {
     // 只在对话和 Agent 标签显示右上角模型信息
     const topbarRight = document.querySelector('.topbar-right');
     if (topbarRight) topbarRight.style.visibility = (tab === CHAT_SCOPE || tab === AGENT_SCOPE) ? '' : 'hidden';
-    if (tab === 'projects') renderProjects();
+    if (tab === 'projects') {
+      await syncPiProjectFolders(true);
+      renderProjects();
+    }
     if (tab === CHAT_SCOPE || tab === AGENT_SCOPE) {
       activeWorkspace = tab;
       if (tab === AGENT_SCOPE) activeRunMode = 'task';
@@ -749,6 +752,50 @@ function getProjects() { ensureDefaultProject(); return projectsCache; }
 function getActiveProjectId() { ensureDefaultProject(); return activeProjectIdCache; }
 function getActiveProject() { const projects = getProjects(); return projects[getActiveProjectId()] || null; }
 
+function projectPathKey(path) {
+  return (path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+async function syncPiProjectFolders(force = false) {
+  if (!USE_DATABASE) return false;
+  try {
+    const data = await apiRequest('/api/pi-projects');
+    const piProjects = data.projects || {};
+    const incomingIds = new Set(Object.keys(piProjects));
+    let changed = false;
+
+    Object.keys(projectsCache).forEach(id => {
+      if (id.startsWith('pi_') && !incomingIds.has(id)) {
+        delete projectsCache[id];
+        changed = true;
+      }
+    });
+
+    const existingByPath = new Map();
+    Object.entries(projectsCache).forEach(([id, project]) => {
+      const key = projectPathKey(project.path);
+      if (key) existingByPath.set(key, id);
+    });
+
+    Object.entries(piProjects).forEach(([id, project]) => {
+      const existingId = existingByPath.get(projectPathKey(project.path)) || id;
+      projectsCache[existingId] = { ...(projectsCache[existingId] || {}), ...project, id: existingId };
+      changed = true;
+    });
+
+    ensureDefaultProject();
+    if (force || changed) {
+      persistProjects();
+      persistActiveProject();
+    }
+    return changed;
+  } catch (err) {
+    console.error(err);
+    showToast('Pi Agent 项目同步失败', 'var(--rose)');
+    return false;
+  }
+}
+
 async function setActiveProject(id) {
   if (!projectsCache[id]) return;
   activeProjectIdCache = id;
@@ -876,6 +923,27 @@ function openProjectForm(projectId = null) {
 function deleteProject(projectId) {
   const project = getProjects()[projectId];
   if (!project) return;
+  if (getProjectSessionIds(projectId).some(id => isSessionRunning(id))) {
+    showToast('项目里还有会话正在运行，结束后再删除。', 'var(--muted)');
+    return;
+  }
+  if (project.source === 'pi' || project.sessionDir) {
+    showConfirm(`确定删除 Pi 项目「${project.name || project.id}」？这会删除本地 Pi session 项目文件夹。`, async () => {
+      try {
+        await deletePiProjectFolder(project);
+        removeProjectLocally(projectId);
+        await syncPiProjectFolders(true);
+        renderProjectControls();
+        renderProjects();
+        if (isAgentWorkspace()) refreshChat();
+        showToast('Pi Agent 项目文件夹已删除', 'var(--muted)');
+      } catch (err) {
+        console.error(err);
+        showToast('Pi Agent 项目删除失败', 'var(--rose)');
+      }
+    });
+    return;
+  }
   if (Object.keys(getProjects()).length <= 1) {
     showToast('至少保留一个项目', 'var(--rose)');
     return;
@@ -961,7 +1029,8 @@ function renderProjects() {
   const sessions = getSessions();
   grid.innerHTML = '';
   Object.values(getProjects()).forEach(project => {
-    const count = Object.values(sessions).filter(s => getSessionKind(s) === AGENT_SCOPE && (s.projectId || 'default') === project.id).length;
+    const localCount = Object.values(sessions).filter(s => getSessionKind(s) === AGENT_SCOPE && (s.projectId || 'default') === project.id).length;
+    const count = Number.isFinite(project.sessionCount) ? project.sessionCount : localCount;
     const card = document.createElement('button');
     card.className = 'project-card' + (project.id === getActiveProjectId() ? ' active' : '');
     card.innerHTML = `
@@ -1089,6 +1158,43 @@ async function deletePiSessionFile(piSessionPath) {
     err.status = resp.status;
     throw err;
   }
+}
+
+async function deletePiProjectFolder(project) {
+  if (!project?.sessionDir && project?.source !== 'pi') return false;
+  const resp = await fetch('/api/pi-project', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ projectId: project.id, sessionDir: project.sessionDir || '' }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    const err = new Error(text || `HTTP ${resp.status}`);
+    err.status = resp.status;
+    throw err;
+  }
+  return true;
+}
+
+function removeProjectLocally(projectId) {
+  delete projectsCache[projectId];
+  const sessions = getSessions();
+  Object.keys(sessions).forEach(sessionId => {
+    const session = sessions[sessionId];
+    if (getSessionKind(session) === AGENT_SCOPE && (session.projectId || 'default') === projectId) {
+      delete sessions[sessionId];
+    }
+  });
+  sessionsCache = sessions;
+  persistSessions();
+  if (activeProjectIdCache === projectId) {
+    activeProjectIdCache = Object.keys(projectsCache)[0] || null;
+  }
+  persistProjects();
+  persistActiveProject();
+  syncedPiProjects.delete(projectId);
+  const visibleSessionIds = getVisibleSessionIds();
+  if (!visibleSessionIds.includes(getActiveId())) setActiveId(visibleSessionIds[0] || null);
 }
 
 function createSession() {
@@ -2340,6 +2446,7 @@ async function initApp() {
     await loadDatabaseState();
   }
   ensurePiCliDefaultConfig();
+  await syncPiProjectFolders();
   renderPresets();
   setConfigScope(CHAT_SCOPE);
   updateModelBadge(); renderProjectControls(); renderProjects(); await refreshChat();

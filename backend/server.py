@@ -422,12 +422,12 @@ def load_projects(conn):
         for row in rows
     }
     if projects:
-        return projects
+        return merge_pi_projects(projects)
 
     project = default_project()
     save_projects(conn, {project["id"]: project})
     set_meta(conn, "active_project_id", project["id"])
-    return {project["id"]: project}
+    return merge_pi_projects({project["id"]: project})
 
 
 def active_project(conn):
@@ -784,6 +784,138 @@ def pi_session_dir_for_cwd(cwd):
     return pi_session_root() / f"--{safe_name}--"
 
 
+def pi_project_id_for_dir(session_dir):
+    return f"pi_{Path(session_dir).name}"
+
+
+def infer_cwd_from_pi_session_dir_name(name):
+    if name.startswith("--") and name.endswith("--") and len(name) > 4:
+      safe_name = name[2:-2]
+    else:
+      safe_name = name
+
+    match = re.match(r"^([A-Za-z])--(.+)$", safe_name)
+    if match and os.name == "nt":
+        return f"{match.group(1)}:\\" + match.group(2).replace("-", "\\")
+    return safe_name.replace("-", os.sep)
+
+
+def read_pi_session_header(path):
+    try:
+        with Path(path).open("r", encoding="utf-8", errors="replace") as handle:
+            first_line = handle.readline().strip()
+        if first_line:
+            record = json.loads(first_line)
+            if record.get("type") == "session":
+                return record
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {}
+
+
+def pi_project_cwd_from_dir(session_dir):
+    try:
+        files = sorted(Path(session_dir).glob("*.jsonl"), key=lambda item: item.stat().st_mtime, reverse=True)
+    except OSError:
+        files = []
+    for path in files:
+        cwd = read_pi_session_header(path).get("cwd")
+        if cwd:
+            return cwd
+    return infer_cwd_from_pi_session_dir_name(Path(session_dir).name)
+
+
+def list_pi_session_projects():
+    root = pi_session_root()
+    if not root.is_dir():
+        return {}
+
+    projects = {}
+    try:
+        dirs = [path for path in root.iterdir() if path.is_dir()]
+    except OSError:
+        return projects
+
+    for session_dir in dirs:
+        try:
+            jsonl_files = list(session_dir.glob("*.jsonl"))
+            if not jsonl_files:
+                continue
+            stats = [path.stat() for path in jsonl_files]
+        except OSError:
+            continue
+
+        cwd = pi_project_cwd_from_dir(session_dir)
+        name = Path(cwd).name or cwd or session_dir.name
+        updated = int(max(stat.st_mtime for stat in stats) * 1000)
+        created = int(min(stat.st_mtime for stat in stats) * 1000)
+        project_id = pi_project_id_for_dir(session_dir)
+        projects[project_id] = {
+            "id": project_id,
+            "name": name,
+            "path": cwd,
+            "description": str(session_dir),
+            "created": created,
+            "updated": updated,
+            "source": "pi",
+            "sessionDir": str(session_dir),
+            "sessionCount": len(jsonl_files),
+        }
+    return projects
+
+
+def merge_pi_projects(projects):
+    merged = dict(projects or {})
+    existing_by_path = {}
+    for project_id, project in merged.items():
+        try:
+            existing_by_path[str(Path(project.get("path") or "").expanduser().resolve()).lower()] = project_id
+        except OSError:
+            continue
+
+    for pi_id, pi_project in list_pi_session_projects().items():
+        try:
+            path_key = str(Path(pi_project.get("path") or "").expanduser().resolve()).lower()
+        except OSError:
+            path_key = ""
+        existing_id = existing_by_path.get(path_key)
+        if existing_id:
+            merged[existing_id] = {**merged[existing_id], **pi_project, "id": existing_id}
+        else:
+            merged[pi_id] = pi_project
+    return merged
+
+
+def resolve_pi_project_dir(project_id=None, session_dir=None):
+    root = pi_session_root().resolve()
+    raw_dir = (session_dir or "").strip().strip("\"'`")
+    candidate = None
+    if raw_dir:
+        candidate = Path(raw_dir).expanduser()
+    elif project_id:
+        projects = list_pi_session_projects()
+        project = projects.get(project_id)
+        if project:
+            candidate = Path(project["sessionDir"])
+    if not candidate:
+        return None
+    try:
+        resolved = candidate.resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        return None
+    if not resolved.is_dir():
+        return None
+    return resolved
+
+
+def delete_pi_project_dir(project_id=None, session_dir=None):
+    resolved = resolve_pi_project_dir(project_id, session_dir)
+    if not resolved:
+        raise FileNotFoundError("Pi Agent 项目文件夹不存在或路径无效。")
+    shutil.rmtree(resolved)
+
+
 def pi_session_info(session_path):
     path = Path(session_path)
     session_id = ""
@@ -924,8 +1056,7 @@ def parse_pi_session_file(path, project_id):
 
 
 def list_project_pi_sessions(project_id, project):
-    cwd = resolve_project_cwd(project)
-    session_dir = pi_session_dir_for_cwd(cwd)
+    session_dir = Path(project.get("sessionDir")) if (project or {}).get("sessionDir") else pi_session_dir_for_cwd(resolve_project_cwd(project))
     if not session_dir.is_dir():
         return []
     sessions = []
@@ -1322,6 +1453,10 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
             self.send_json({"sessions": list_project_pi_sessions(resolved_project_id, project)})
             return
 
+        if parsed_path == "/api/pi-projects":
+            self.send_json({"projects": list_pi_session_projects()})
+            return
+
         if self.path == "/api/state":
             with db_connection() as conn:
                 config = load_config(conn)
@@ -1405,10 +1540,22 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": False, "error": "Unknown endpoint"}, status=404)
 
     def do_DELETE(self):
-        if self.path == "/api/pi-session":
+        parsed_path = urlparse(self.path).path
+        if parsed_path == "/api/pi-session":
             try:
                 payload = self.read_json()
                 delete_pi_session_file(payload.get("piSessionPath"))
+                self.send_json({"ok": True})
+            except FileNotFoundError as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=404)
+            except (OSError, ValueError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
+        if parsed_path == "/api/pi-project":
+            try:
+                payload = self.read_json()
+                delete_pi_project_dir(payload.get("projectId"), payload.get("sessionDir"))
                 self.send_json({"ok": True})
             except FileNotFoundError as exc:
                 self.send_json({"ok": False, "error": str(exc)}, status=404)
