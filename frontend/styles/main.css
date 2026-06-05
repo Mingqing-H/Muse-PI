@@ -184,6 +184,9 @@ body {
   padding: clamp(28px, 5vh, 56px) clamp(24px, 6vw, 80px);
   background: var(--bg-warm);
 }
+#projectsView::-webkit-scrollbar { width: 4px; }
+#projectsView::-webkit-scrollbar-track { background: transparent; }
+#projectsView::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 2px; }
 
 .projects-layout {
   width: 100%;
@@ -217,15 +220,18 @@ body {
 }
 
 .projects-toolbar {
-  grid-column: 1;
   display: grid;
   gap: 12px;
   margin-top: 28px;
 }
 
+.projects-sidebar {
+  position: sticky;
+  top: 24px;
+}
+
 .project-grid {
   grid-column: 2;
-  grid-row: 1 / span 2;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 12px;
@@ -1821,10 +1827,14 @@ body {
     grid-template-columns: 1fr;
     gap: 22px;
   }
+  .projects-sidebar,
   .projects-toolbar,
   .project-grid {
     grid-column: auto;
     grid-row: auto;
+  }
+  .projects-sidebar {
+    position: static;
   }
   #configView { padding: 24px 16px 40px; }
   .config-container {
