@@ -16,7 +16,6 @@ import subprocess
 import time
 from urllib.parse import parse_qs, urlparse
 import webbrowser
-import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -368,75 +367,71 @@ def clear_config(conn):
     delete_meta(conn, "active_provider", "active_chat_provider", "active_agent_provider")
 
 
-def default_project():
-    timestamp = now_ms()
+def require_project_folder_path(path):
+    raw = str(path or "").strip().strip("\"'")
+    if not raw:
+        raise ValueError("请填写本地项目文件夹路径。")
+    parsed = urlparse(raw)
+    if parsed.scheme and len(parsed.scheme) > 1:
+        raise ValueError("项目路径必须是本地文件夹，不能是 URL。")
+    try:
+        return Path(raw).expanduser().resolve(strict=False)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"项目路径无效：{raw}") from exc
+
+
+def project_path_status(path):
+    raw = str(path or "").strip()
+    if not raw:
+        return {
+            "available": False,
+            "projectPathExists": False,
+            "projectPathIsDir": False,
+            "unavailableReason": "项目文件夹不存在",
+        }
+    try:
+        folder = Path(raw).expanduser()
+        exists = folder.exists()
+        is_dir = exists and folder.is_dir()
+    except (OSError, ValueError):
+        return {
+            "available": False,
+            "projectPathExists": False,
+            "projectPathIsDir": False,
+            "unavailableReason": "项目路径无效",
+        }
+
+    available = bool(exists and is_dir)
+    reason = ""
+    if not exists:
+        reason = "项目文件夹不存在"
+    elif not is_dir:
+        reason = "项目路径不是文件夹"
     return {
-        "id": "default",
-        "name": "本地工作区",
-        "path": str(ROOT),
-        "description": "默认项目",
-        "created": timestamp,
-        "updated": timestamp,
+        "available": available,
+        "projectPathExists": bool(exists),
+        "projectPathIsDir": bool(is_dir),
+        "unavailableReason": reason,
     }
-
-
-def save_projects(conn, projects):
-    projects = projects or {}
-    timestamp = now_ms()
-    conn.execute("DELETE FROM projects")
-    for project_id, project in projects.items():
-        pid = project.get("id") or project_id or f"p_{uuid.uuid4().hex[:10]}"
-        conn.execute(
-            """
-            INSERT INTO projects (id, name, path, description, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                pid,
-                project.get("name") or "未命名项目",
-                project.get("path") or str(ROOT),
-                project.get("description") or "",
-                int(project.get("created") or timestamp),
-                int(project.get("updated") or timestamp),
-            ),
-        )
 
 
 def load_projects(conn):
-    rows = conn.execute(
-        """
-        SELECT id, name, path, description, created_at, updated_at
-        FROM projects
-        ORDER BY updated_at DESC, created_at DESC
-        """
-    ).fetchall()
-    projects = {
-        row["id"]: {
-            "id": row["id"],
-            "name": row["name"],
-            "path": row["path"],
-            "description": row["description"],
-            "created": row["created_at"],
-            "updated": row["updated_at"],
-        }
-        for row in rows
-    }
-    if projects:
-        return merge_pi_projects(projects)
+    return list_pi_session_projects()
 
-    project = default_project()
-    save_projects(conn, {project["id"]: project})
-    set_meta(conn, "active_project_id", project["id"])
-    return merge_pi_projects({project["id"]: project})
+
+def resolve_active_project_id(conn, projects=None):
+    projects = projects if projects is not None else load_projects(conn)
+    active_id = get_meta(conn, "active_project_id")
+    active_project = projects.get(active_id)
+    if not active_project or not active_project.get("available"):
+        active_id = next((project_id for project_id, project in projects.items() if project.get("available")), None)
+        set_meta(conn, "active_project_id", active_id)
+    return active_id
 
 
 def active_project(conn):
     projects = load_projects(conn)
-    active_id = get_meta(conn, "active_project_id")
-    if active_id not in projects:
-        active_id = next(iter(projects), None)
-        if active_id:
-            set_meta(conn, "active_project_id", active_id)
+    active_id = resolve_active_project_id(conn, projects)
     return projects.get(active_id)
 
 
@@ -784,20 +779,91 @@ def pi_session_dir_for_cwd(cwd):
     return pi_session_root() / f"--{safe_name}--"
 
 
+def create_pi_project(path):
+    folder = require_project_folder_path(path)
+    session_dir = pi_session_dir_for_cwd(folder)
+    project_folder_existed = folder.exists()
+
+    if project_folder_existed and not folder.is_dir():
+        raise ValueError(f"项目路径不是文件夹：{folder}")
+    if session_dir.exists():
+        raise FileExistsError("对话项目已存在")
+
+    try:
+        if not project_folder_existed:
+            folder.mkdir(parents=True, exist_ok=False)
+        pi_session_root().mkdir(parents=True, exist_ok=True)
+        session_dir.mkdir(parents=False, exist_ok=False)
+    except FileExistsError as exc:
+        if session_dir.exists():
+            raise FileExistsError("对话项目已存在") from exc
+        raise ValueError(f"无法创建项目文件夹：{folder}") from exc
+    except OSError as exc:
+        raise ValueError(f"无法创建对话项目：{session_dir}") from exc
+
+    status = "dialog_created" if project_folder_existed else "project_and_dialog_created"
+    message = "对话项目已创建" if project_folder_existed else "项目文件夹和对话项目已创建"
+    project_id = pi_project_id_for_dir(session_dir)
+    project = list_pi_session_projects().get(project_id)
+    if not project:
+        timestamp = now_ms()
+        project = {
+            "id": project_id,
+            "name": folder.name or str(folder),
+            "path": str(folder),
+            "description": str(session_dir),
+            "created": timestamp,
+            "updated": timestamp,
+            "source": "pi",
+            "sessionDir": str(session_dir),
+            "sessionCount": 0,
+            **project_path_status(str(folder)),
+        }
+    return {
+        "status": status,
+        "message": message,
+        "project": project,
+    }
+
+
 def pi_project_id_for_dir(session_dir):
     return f"pi_{Path(session_dir).name}"
 
 
 def infer_cwd_from_pi_session_dir_name(name):
     if name.startswith("--") and name.endswith("--") and len(name) > 4:
-      safe_name = name[2:-2]
+        safe_name = name[2:-2]
     else:
-      safe_name = name
+        safe_name = name
 
     match = re.match(r"^([A-Za-z])--(.+)$", safe_name)
     if match and os.name == "nt":
-        return f"{match.group(1)}:\\" + match.group(2).replace("-", "\\")
+        return infer_windows_cwd_from_safe_name(match.group(1), match.group(2))
     return safe_name.replace("-", os.sep)
+
+
+def infer_windows_cwd_from_safe_name(drive, encoded_path):
+    root = Path(f"{drive}:\\")
+    if not root.exists():
+        return f"{drive}:\\" + encoded_path.replace("-", "\\")
+
+    tokens = encoded_path.split("-")
+    current = root
+    index = 0
+    while index < len(tokens):
+        best = None
+        for end in range(len(tokens), index, -1):
+            segment = "-".join(tokens[index:end])
+            if not segment:
+                continue
+            candidate = current / segment
+            if candidate.exists():
+                best = (candidate, end)
+                break
+        if not best:
+            return str(current / Path(*tokens[index:]))
+        current, index = best
+    return str(current)
 
 
 def read_pi_session_header(path):
@@ -832,7 +898,11 @@ def list_pi_session_projects():
 
     projects = {}
     try:
-        dirs = [path for path in root.iterdir() if path.is_dir()]
+        dirs = sorted(
+            (path for path in root.iterdir() if path.is_dir()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
     except OSError:
         return projects
 
@@ -846,6 +916,7 @@ def list_pi_session_projects():
 
         cwd = pi_project_cwd_from_dir(session_dir)
         name = Path(cwd).name or cwd or session_dir.name
+        availability = project_path_status(cwd)
         updated_source = max((stat.st_mtime for stat in stats), default=dir_stat.st_mtime)
         created_source = min((stat.st_mtime for stat in stats), default=dir_stat.st_ctime)
         updated = int(updated_source * 1000)
@@ -861,30 +932,9 @@ def list_pi_session_projects():
             "source": "pi",
             "sessionDir": str(session_dir),
             "sessionCount": len(jsonl_files),
+            **availability,
         }
     return projects
-
-
-def merge_pi_projects(projects):
-    merged = dict(projects or {})
-    existing_by_path = {}
-    for project_id, project in merged.items():
-        try:
-            existing_by_path[str(Path(project.get("path") or "").expanduser().resolve()).lower()] = project_id
-        except OSError:
-            continue
-
-    for pi_id, pi_project in list_pi_session_projects().items():
-        try:
-            path_key = str(Path(pi_project.get("path") or "").expanduser().resolve()).lower()
-        except OSError:
-            path_key = ""
-        existing_id = existing_by_path.get(path_key)
-        if existing_id:
-            merged[existing_id] = {**merged[existing_id], **pi_project, "id": existing_id}
-        else:
-            merged[pi_id] = pi_project
-    return merged
 
 
 def resolve_pi_project_dir(project_id=None, session_dir=None):
@@ -904,6 +954,8 @@ def resolve_pi_project_dir(project_id=None, session_dir=None):
         resolved = candidate.resolve()
         resolved.relative_to(root)
     except (OSError, ValueError):
+        return None
+    if resolved == root or resolved.parent != root:
         return None
     if not resolved.is_dir():
         return None
@@ -1108,14 +1160,10 @@ def latest_pi_session_file(cwd, started_at):
 
 
 def resolve_project_cwd(project):
-    project_path = (project or {}).get("path") or str(ROOT)
-    try:
-        path = Path(project_path).expanduser()
-        if path.exists() and path.is_dir():
-            return str(path)
-    except OSError:
-        pass
-    return str(ROOT)
+    status = project_path_status((project or {}).get("path"))
+    if not status["available"]:
+        raise ValueError("项目文件夹不存在，无法继续对话")
+    return str(Path((project or {}).get("path")).expanduser())
 
 
 def resolve_project_image_path(project, image_path):
@@ -1286,7 +1334,11 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         prompt = payload.get("prompt")
         if prompt is None:
             prompt = latest_user_prompt(payload.get("messages") or [])
-        cwd = resolve_project_cwd(project)
+        try:
+            cwd = resolve_project_cwd(project)
+        except ValueError:
+            self.stream_ndjson([{"error": "项目文件夹不存在，无法继续对话"}], status=400)
+            return
         session_path = resolve_pi_session_path(payload.get("piSessionPath"))
         self.stream_ndjson(stream_pi_cli(command, prompt, cwd, session_path, model_name))
 
@@ -1295,7 +1347,7 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         try:
             result = self._pick_folder_win32()
             if result:
-                self.send_json({"ok": True, "path": result})
+                self.send_json({"ok": True, "path": str(Path(result).expanduser())})
             else:
                 self.send_json({"ok": False, "path": ""})
         except Exception as exc:
@@ -1307,7 +1359,17 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
         import ctypes
         import ctypes.wintypes as wt
 
+        user32 = ctypes.windll.user32
         ole32 = ctypes.windll.ole32
+        restore_dpi_context = None
+        try:
+            set_thread_dpi_awareness = user32.SetThreadDpiAwarenessContext
+            set_thread_dpi_awareness.argtypes = [ctypes.c_void_p]
+            set_thread_dpi_awareness.restype = ctypes.c_void_p
+            restore_dpi_context = set_thread_dpi_awareness(ctypes.c_void_p(-4))
+        except (AttributeError, OSError):
+            set_thread_dpi_awareness = None
+
         ole32.CoInitializeEx(None, 0)  # COINIT_APARTMENTTHREADED
 
         try:
@@ -1412,6 +1474,8 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
 
         finally:
             ole32.CoUninitialize()
+            if set_thread_dpi_awareness and restore_dpi_context:
+                set_thread_dpi_awareness(restore_dpi_context)
 
     def send_project_image(self):
         parsed = urlparse(self.path)
@@ -1464,9 +1528,7 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
                 provider = (config or {}).get("activeAgentProvider")
                 provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
                 projects = load_projects(conn)
-                active_project_id = get_meta(conn, "active_project_id")
-                if active_project_id not in projects:
-                    active_project_id = next(iter(projects), None)
+                active_project_id = resolve_active_project_id(conn, projects)
                 self.send_json(
                     {
                         "config": config,
@@ -1515,8 +1577,13 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
                     return
 
                 if self.path == "/api/projects":
-                    save_projects(conn, payload.get("projects", {}))
-                    self.send_json({"ok": True})
+                    self.send_json({"ok": True, "projects": list_pi_session_projects()})
+                    return
+
+                if self.path == "/api/pi-project":
+                    result = create_pi_project(payload.get("path"))
+                    set_meta(conn, "active_project_id", result["project"]["id"])
+                    self.send_json({"ok": True, **result})
                     return
 
                 if self.path == "/api/active-project":
@@ -1534,6 +1601,12 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
                     self.send_json({"ok": True})
                     return
 
+        except ValueError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+        except FileExistsError as exc:
+            self.send_json({"ok": False, "error": str(exc)}, status=409)
+            return
         except Exception as exc:
             self.send_json({"ok": False, "error": str(exc)}, status=500)
             return

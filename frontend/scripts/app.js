@@ -50,6 +50,32 @@ async function apiRequest(path, options = {}) {
   return resp.json();
 }
 
+function extractErrorMessage(error) {
+  const raw = error?.message || String(error || '');
+  if (!raw) return '';
+  try {
+    const data = JSON.parse(raw);
+    return data.error || raw;
+  } catch {
+    return raw;
+  }
+}
+
+let toastTimer = null;
+function showToast(message, color = 'var(--accent)') {
+  const toast = $('toast');
+  if (!toast) return;
+  if (toastTimer) clearTimeout(toastTimer);
+  toast.textContent = message || '';
+  toast.style.color = color;
+  toast.style.borderColor = color;
+  toast.classList.add('show');
+  toastTimer = setTimeout(() => {
+    toast.classList.remove('show');
+    toastTimer = null;
+  }, 2600);
+}
+
 async function loadDatabaseState() {
   if (!USE_DATABASE) {
     try { configCache = JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch { configCache = null; }
@@ -83,20 +109,17 @@ async function migrateLocalStorageState() {
   try { localConfig = JSON.parse(localStorage.getItem(STORAGE_KEY)); } catch {}
   try { localProjects = JSON.parse(localStorage.getItem(PROJECTS_KEY)) || {}; } catch {}
   try { localSessions = JSON.parse(localStorage.getItem(SESSIONS_KEY)) || {}; } catch {}
-  const localActiveProjectId = localStorage.getItem(ACTIVE_PROJECT_KEY) || null;
   const localActiveId = localStorage.getItem(ACTIVE_KEY) || null;
 
   if (!localConfig && Object.keys(localProjects).length === 0 && Object.keys(localSessions).length === 0 && !localActiveId) return;
 
   configCache = localConfig;
-  projectsCache = localProjects;
-  activeProjectIdCache = localActiveProjectId;
+  projectsCache = {};
+  activeProjectIdCache = null;
   ensureDefaultProject();
   sessionsCache = localSessions;
   activeIdCache = localActiveId;
   if (configCache) await apiRequest('/api/config', { method: 'POST', body: JSON.stringify({ config: configCache }) });
-  if (Object.keys(projectsCache).length > 0) await apiRequest('/api/projects', { method: 'POST', body: JSON.stringify({ projects: projectsCache }) });
-  if (activeProjectIdCache) await apiRequest('/api/active-project', { method: 'POST', body: JSON.stringify({ activeProjectId: activeProjectIdCache }) });
   if (Object.keys(sessionsCache).length > 0) await apiRequest('/api/sessions', { method: 'POST', body: JSON.stringify({ sessions: sessionsCache }) });
   if (activeIdCache) await apiRequest('/api/active-session', { method: 'POST', body: JSON.stringify({ activeId: activeIdCache }) });
   localStorage.removeItem(STORAGE_KEY);
@@ -144,24 +167,39 @@ function defaultProject() {
 
 function ensureDefaultProject() {
   if (!projectsCache || typeof projectsCache !== 'object') projectsCache = {};
+  if (USE_DATABASE) {
+    if (!activeProjectIdCache || !isProjectAvailable(projectsCache[activeProjectIdCache])) {
+      activeProjectIdCache = Object.entries(projectsCache)
+        .find(([, project]) => isProjectAvailable(project))?.[0] || null;
+    }
+    return;
+  }
   if (Object.keys(projectsCache).length === 0) {
     const p = defaultProject();
     projectsCache[p.id] = p;
     activeProjectIdCache = p.id;
   }
   if (!activeProjectIdCache || !projectsCache[activeProjectIdCache]) {
-    activeProjectIdCache = Object.keys(projectsCache)[0];
+    activeProjectIdCache = Object.keys(projectsCache)[0] || null;
   }
 }
 
-function persistProjects() {
-  if (USE_DATABASE) apiRequest('/api/projects', { method: 'POST', body: JSON.stringify({ projects: projectsCache }) }).catch(console.error);
-  else localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsCache));
+function persistProjects({ throwOnError = false } = {}) {
+  if (USE_DATABASE) {
+    return Promise.resolve({ ok: true });
+  }
+  localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsCache));
+  return Promise.resolve({ ok: true });
 }
 
-function persistActiveProject() {
-  if (USE_DATABASE) apiRequest('/api/active-project', { method: 'POST', body: JSON.stringify({ activeProjectId: activeProjectIdCache }) }).catch(console.error);
-  else localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectIdCache || '');
+function persistActiveProject({ throwOnError = false } = {}) {
+  if (USE_DATABASE) {
+    const request = apiRequest('/api/active-project', { method: 'POST', body: JSON.stringify({ activeProjectId: activeProjectIdCache }) });
+    if (!throwOnError) request.catch(console.error);
+    return request;
+  }
+  localStorage.setItem(ACTIVE_PROJECT_KEY, activeProjectIdCache || '');
+  return Promise.resolve({ ok: true });
 }
 
 function persistSessions() {
@@ -744,12 +782,55 @@ function updateAgentModelPicker() {
 }
 
 // Projects
+function isProjectAvailable(project) {
+  return !!project && project.available !== false;
+}
+
+function projectUnavailableReason(project) {
+  return project?.unavailableReason || '项目文件夹不存在';
+}
+
 function getProjects() { ensureDefaultProject(); return projectsCache; }
 function getActiveProjectId() { ensureDefaultProject(); return activeProjectIdCache; }
 function getActiveProject() { const projects = getProjects(); return projects[getActiveProjectId()] || null; }
 
+function normalizeProjectFolderPath(path) {
+  const value = (path || '').trim().replace(/^["']+|["']+$/g, '');
+  if (!value) return '';
+  const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/');
+  if (/^[a-z]:\/?$/i.test(normalized)) return normalized.slice(0, 2).toLowerCase() + '/';
+  return normalized.replace(/\/+$/, '').toLowerCase();
+}
+
 function projectPathKey(path) {
-  return (path || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+  return normalizeProjectFolderPath(path);
+}
+
+function findProjectPathConflict(path, ignoredProjectId = null) {
+  const key = projectPathKey(path);
+  if (!key) return null;
+  return Object.values(getProjects()).find(project =>
+    project.id !== ignoredProjectId && projectPathKey(project.path) === key
+  ) || null;
+}
+
+function projectPathConflictMessage(conflict) {
+  return `对话项目已存在：${conflict?.name || '未命名项目'}`;
+}
+
+function showProjectPathConflict(conflict) {
+  showToast(projectPathConflictMessage(conflict), 'var(--rose)');
+}
+
+function projectCreateToastMessage(result) {
+  return result?.message || '对话项目已创建';
+}
+
+async function createPiProject(path) {
+  return apiRequest('/api/pi-project', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  });
 }
 
 async function syncPiProjectFolders(force = false) {
@@ -757,34 +838,17 @@ async function syncPiProjectFolders(force = false) {
   try {
     const data = await apiRequest('/api/pi-projects');
     const piProjects = data.projects || {};
-    const incomingIds = new Set(Object.keys(piProjects));
-    let changed = false;
-
-    Object.keys(projectsCache).forEach(id => {
-      if (id.startsWith('pi_') && !incomingIds.has(id)) {
-        delete projectsCache[id];
-        changed = true;
-      }
-    });
-
-    const existingByPath = new Map();
-    Object.entries(projectsCache).forEach(([id, project]) => {
-      const key = projectPathKey(project.path);
-      if (key) existingByPath.set(key, id);
-    });
-
-    Object.entries(piProjects).forEach(([id, project]) => {
-      const existingId = existingByPath.get(projectPathKey(project.path)) || id;
-      projectsCache[existingId] = { ...(projectsCache[existingId] || {}), ...project, id: existingId };
-      changed = true;
-    });
-
+    const previousProjects = projectsCache || {};
+    const previousActiveProjectId = activeProjectIdCache;
+    projectsCache = piProjects;
     ensureDefaultProject();
-    if (force || changed) {
-      persistProjects();
+    Array.from(syncedPiProjects).forEach(id => {
+      if (!projectsCache[id]) syncedPiProjects.delete(id);
+    });
+    if (previousActiveProjectId !== activeProjectIdCache) {
       persistActiveProject();
     }
-    return changed;
+    return force || JSON.stringify(previousProjects) !== JSON.stringify(projectsCache);
   } catch (err) {
     console.error(err);
     showToast('Pi Agent 项目同步失败', 'var(--rose)');
@@ -793,7 +857,13 @@ async function syncPiProjectFolders(force = false) {
 }
 
 async function setActiveProject(id) {
-  if (!projectsCache[id]) return;
+  const project = projectsCache[id];
+  if (!project) return;
+  if (!isProjectAvailable(project)) {
+    showToast(projectUnavailableReason(project), 'var(--rose)');
+    renderProjects();
+    return;
+  }
   activeProjectIdCache = id;
   persistActiveProject();
   if (isAgentWorkspace()) {
@@ -811,109 +881,165 @@ async function setActiveProject(id) {
   if (isAgentWorkspace()) refreshChat();
 }
 
-function saveProjectForm(projectId, values) {
-  const isNew = !projectId;
-  const id = projectId || 'p_' + Date.now();
-  const current = projectsCache[id] || {};
-  projectsCache[id] = {
-    id,
-    name: values.name.trim() || '新项目',
-    path: values.path.trim(),
-    description: current.description || '',
-    created: current.created || Date.now(),
-    updated: Date.now(),
-  };
-  if (isNew) activeProjectIdCache = id;
-  persistProjects();
-  if (isNew) persistActiveProject();
+async function saveProjectForm(values) {
+  const path = (values.path || '').trim();
+  const conflict = findProjectPathConflict(path);
+  if (conflict) {
+    showProjectPathConflict(conflict);
+    return null;
+  }
+  const result = await createPiProject(path);
+  if (result.project?.id) activeProjectIdCache = result.project.id;
+  await syncPiProjectFolders(true);
+  if (result.project?.id && projectsCache[result.project.id]) activeProjectIdCache = result.project.id;
+  await persistActiveProject({ throwOnError: true });
+  syncedPiProjects.delete(activeProjectIdCache);
   renderProjectControls();
   renderProjects();
   if (isAgentWorkspace()) refreshChat();
-  showToast(isNew ? '项目已创建' : '项目已更新', 'var(--accent)');
-  return id;
+  showToast(projectCreateToastMessage(result), 'var(--accent)');
+  return result.project?.id || activeProjectIdCache;
 }
 
-function openProjectForm(projectId = null) {
-  const project = projectId ? getProjects()[projectId] : null;
-  if (projectId && !project) return;
+function setProjectFolderInput(pathInput, folderPath) {
+  const nextPath = String(folderPath || '').trim();
+  if (!pathInput || !nextPath) return false;
+  pathInput.value = nextPath;
+  pathInput.defaultValue = nextPath;
+  pathInput.setAttribute('value', nextPath);
+  pathInput.dataset.pickedFolder = nextPath;
+  pathInput.dispatchEvent(new Event('input', { bubbles: true }));
+  pathInput.dispatchEvent(new Event('change', { bubbles: true }));
+  pathInput.focus({ preventScroll: true });
+  pathInput.setSelectionRange(nextPath.length, nextPath.length);
+  return true;
+}
+
+async function requestProjectFolderPath() {
+  const resp = await fetch('/api/pick-folder', {
+    method: 'GET',
+    cache: 'no-store',
+  });
+  const text = await resp.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(text || '文件夹选择器返回了无效响应');
+  }
+  if (!resp.ok || data.error) throw new Error(data.error || text || `HTTP ${resp.status}`);
+  if (!data.ok || !data.path) return '';
+  return data.path;
+}
+
+function openProjectForm() {
+  const formUid = `project-${Date.now().toString(36)}`;
+  const pathInputId = `${formUid}-path`;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
     <form class="project-form">
       <div class="project-form-head">
-        <h3>${project ? '编辑项目' : '新建项目'}</h3>
+        <h3>新建项目</h3>
         <button type="button" class="modal-x" aria-label="关闭">&times;</button>
       </div>
-      <label>
-        <span>项目名称</span>
-        <input name="name" type="text" value="${escapeHtml(project?.name || '')}" placeholder="例如：我的应用" autocomplete="off">
-      </label>
-      <label>
-        <span>本地文件夹路径</span>
+      <div class="project-form-field">
+        <label for="${pathInputId}">本地文件夹路径</label>
         <div class="path-input-row">
-          <input name="path" type="text" value="${escapeHtml(project?.path || '')}" placeholder="C:\\Users\\you\\project" spellcheck="false">
-          <button type="button" class="btn-browse" title="浏览文件夹">
+          <input id="${pathInputId}" name="path" type="text" value="" placeholder="C:\\Users\\you\\project" spellcheck="false">
+          <button type="button" class="project-folder-picker" data-action="pick-project-folder" title="浏览文件夹" aria-label="浏览文件夹">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
             </svg>
             <span>浏览</span>
           </button>
         </div>
-      </label>
-      <p>Agent 会在这个目录里执行 Pi CLI。请填写本机可访问的完整文件夹路径。</p>
+        <div class="project-form-error" data-role="project-path-error" aria-live="polite"></div>
+      </div>
+      <p>Agent 会在项目文件夹里执行 Pi CLI，会话记录会保存在 Pi 的 sessions 目录。</p>
       <div class="project-form-actions">
         <button type="button" class="btn btn-secondary form-cancel">取消</button>
-        <button type="submit" class="btn btn-primary">保存</button>
+        <button type="submit" class="btn btn-primary">创建</button>
       </div>
     </form>
   `;
   const close = () => overlay.remove();
   document.body.appendChild(overlay);
   const form = overlay.querySelector('form');
-  const nameInput = form.elements.name;
-  const pathInput = form.elements.path;
+  const pathInput = form.querySelector('input[name="path"]');
+  const pathError = form.querySelector('[data-role="project-path-error"]');
+  const submitButton = form.querySelector('button[type="submit"]');
+  if (!pathInput) {
+    showToast('项目表单初始化失败', 'var(--rose)');
+    overlay.remove();
+    return;
+  }
+  const setPathError = message => {
+    if (!pathError) return;
+    pathError.textContent = message || '';
+    pathError.classList.toggle('show', Boolean(message));
+  };
+  pathInput.addEventListener('input', () => setPathError(''));
   overlay.querySelector('.modal-x').onclick = close;
   overlay.querySelector('.form-cancel').onclick = close;
   overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
-  // 浏览文件夹按钮
-  const browseBtn = overlay.querySelector('.btn-browse');
-  if (browseBtn) {
-    browseBtn.onclick = async () => {
-      try {
-        browseBtn.disabled = true;
-        browseBtn.classList.add('loading');
-        const resp = await fetch('/api/pick-folder');
-        const data = await resp.json();
-        if (data.ok && data.path) {
-          pathInput.value = data.path;
-          pathInput.focus();
-        }
-      } catch (e) {
-        showToast('无法打开文件夹选择器', 'var(--rose)');
-      } finally {
-        browseBtn.disabled = false;
-        browseBtn.classList.remove('loading');
-      }
-    };
-  }
-  form.onsubmit = event => {
+  const folderPicker = overlay.querySelector('[data-action="pick-project-folder"]');
+  folderPicker?.addEventListener('click', async event => {
     event.preventDefault();
-    const name = nameInput.value.trim();
-    const path = pathInput.value.trim();
-    if (!name) {
-      showToast('请填写项目名称', 'var(--rose)');
-      nameInput.focus();
-      return;
+    event.stopPropagation();
+    folderPicker.disabled = true;
+    folderPicker.dataset.state = 'loading';
+    try {
+      const folderPath = await requestProjectFolderPath();
+      if (!folderPath) {
+        showToast('已取消选择文件夹', 'var(--muted)');
+        return;
+      }
+      if (setProjectFolderInput(pathInput, folderPath)) {
+        setPathError('');
+        showToast(`已填入：${folderPath}`, 'var(--accent)');
+      }
+    } catch (error) {
+      console.error(error);
+      showToast('无法打开文件夹选择器', 'var(--rose)');
+    } finally {
+      folderPicker.disabled = false;
+      delete folderPicker.dataset.state;
     }
+  });
+  form.onsubmit = async event => {
+    event.preventDefault();
+    setPathError('');
+    const path = pathInput.value.trim();
     if (!path) {
       showToast('请填写本地文件夹路径', 'var(--rose)');
       pathInput.focus();
       return;
     }
-    close();
-    saveProjectForm(projectId, { name, path });
+    const conflict = findProjectPathConflict(path);
+    if (conflict) {
+      const message = projectPathConflictMessage(conflict);
+      setPathError(message);
+      showToast(message, 'var(--rose)');
+      pathInput.focus();
+      pathInput.select();
+      return;
+    }
+    if (submitButton) submitButton.disabled = true;
+    try {
+      const savedId = await saveProjectForm({ path });
+      if (savedId) close();
+    } catch (error) {
+      console.error(error);
+      const message = extractErrorMessage(error) || '项目创建失败';
+      setPathError(message);
+      showToast(message, 'var(--rose)');
+      pathInput.focus();
+    } finally {
+      if (submitButton) submitButton.disabled = false;
+    }
   };
-  setTimeout(() => nameInput.focus(), 0);
+  setTimeout(() => pathInput.focus(), 0);
 }
 
 function deleteProject(projectId) {
@@ -923,49 +1049,19 @@ function deleteProject(projectId) {
     showToast('项目里还有会话正在运行，结束后再删除。', 'var(--muted)');
     return;
   }
-  if (project.source === 'pi' || project.sessionDir) {
-    showConfirm(`确定删除 Pi 项目「${project.name || project.id}」？这会删除本地 Pi session 项目文件夹。`, async () => {
-      try {
-        await deletePiProjectFolder(project);
-        removeProjectLocally(projectId);
-        await syncPiProjectFolders(true);
-        renderProjectControls();
-        renderProjects();
-        if (isAgentWorkspace()) refreshChat();
-        showToast('Pi Agent 项目文件夹已删除', 'var(--muted)');
-      } catch (err) {
-        console.error(err);
-        showToast('Pi Agent 项目删除失败', 'var(--rose)');
-      }
-    });
-    return;
-  }
-  if (Object.keys(getProjects()).length <= 1) {
-    showToast('至少保留一个项目', 'var(--rose)');
-    return;
-  }
-  showConfirm(`确定删除项目「${project.name || '未命名项目'}」？该项目下的 Agent 会话也会删除。`, () => {
-    delete projectsCache[projectId];
-    const sessions = getSessions();
-    Object.keys(sessions).forEach(sessionId => {
-      const session = sessions[sessionId];
-      if (getSessionKind(session) === AGENT_SCOPE && (session.projectId || 'default') === projectId) {
-        delete sessions[sessionId];
-      }
-    });
-    sessionsCache = sessions;
-    persistSessions();
-    if (activeProjectIdCache === projectId) {
-      activeProjectIdCache = Object.keys(projectsCache)[0] || null;
+  showConfirm(`确定删除对话项目「${project.name || project.id}」？这只会删除 Pi 会话记录文件夹，不会删除项目文件夹。`, async () => {
+    try {
+      await deletePiProjectFolder(project);
+      removeProjectLocally(projectId);
+      await syncPiProjectFolders(true);
+      renderProjectControls();
+      renderProjects();
+      if (isAgentWorkspace()) refreshChat();
+      showToast('对话项目已删除，项目文件夹已保留', 'var(--muted)');
+    } catch (err) {
+      console.error(err);
+      showToast('对话项目删除失败', 'var(--rose)');
     }
-    persistProjects();
-    persistActiveProject();
-    const visibleSessionIds = getVisibleSessionIds();
-    if (!visibleSessionIds.includes(getActiveId())) setActiveId(visibleSessionIds[0] || null);
-    renderProjectControls();
-    renderProjects();
-    if (isAgentWorkspace()) refreshChat();
-    showToast('项目已删除', 'var(--muted)');
   });
 }
 
@@ -989,12 +1085,13 @@ function getVisibleSessionIds() {
 
 function renderProjectControls() {
   const project = getActiveProject();
+  const hasUsableProject = isProjectAvailable(project);
   if (isAgentWorkspace()) activeRunMode = 'task';
-  if ($('projectBadge')) $('projectBadge').textContent = isAgentWorkspace() ? (project?.name || '本地工作区') : '对话无需项目';
+  if ($('projectBadge')) $('projectBadge').textContent = isAgentWorkspace() ? (project?.name || '未选择项目') : '对话无需项目';
   if ($('activeProjectHint')) $('activeProjectHint').textContent = isAgentWorkspace() && project ? project.path || project.name : '';
   if ($('projectSwitcher')) $('projectSwitcher').style.display = isAgentWorkspace() ? '' : 'none';
   if ($('btnNewSession')) $('btnNewSession').textContent = isAgentWorkspace() ? '+ 新建 Agent 会话' : '+ 新建对话';
-  if ($('input')) $('input').placeholder = isAgentWorkspace() ? '描述要在当前项目中执行的任务...' : '输入消息...';
+  if ($('input')) $('input').placeholder = isAgentWorkspace() ? (hasUsableProject ? '描述要在当前项目中执行的任务...' : '请新建项目或恢复项目文件夹') : '输入消息...';
   updateAgentModelPicker();
 
   const trigger = $('projectSelectTrigger');
@@ -1004,13 +1101,18 @@ function renderProjectControls() {
   const projects = Object.values(getProjects()).sort((a, b) => (b.updated || 0) - (a.updated || 0));
   const activeId = getActiveProjectId();
   const activeProject = projects.find(p => p.id === activeId);
-  trigger.textContent = activeProject ? activeProject.name : '选择项目';
+  trigger.textContent = activeProject ? activeProject.name : (projects.length ? '暂无可用项目' : '暂无项目');
   projects.forEach(projectItem => {
+    const available = isProjectAvailable(projectItem);
     const li = document.createElement('li');
-    li.className = 'custom-select-option' + (projectItem.id === activeId ? ' selected' : '');
-    li.textContent = projectItem.name;
+    li.className = 'custom-select-option' + (projectItem.id === activeId ? ' selected' : '') + (available ? '' : ' unavailable');
+    li.textContent = available ? projectItem.name : `${projectItem.name}（缺失）`;
     li.dataset.value = projectItem.id;
     li.onclick = () => {
+      if (!available) {
+        showToast(projectUnavailableReason(projectItem), 'var(--rose)');
+        return;
+      }
       setActiveProject(projectItem.id);
       $('projectSelect')?.classList.remove('open');
     };
@@ -1024,36 +1126,50 @@ function renderProjects() {
   if (!grid) return;
   const sessions = getSessions();
   grid.innerHTML = '';
-  Object.values(getProjects()).forEach(project => {
+  const projectItems = Object.values(getProjects()).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  if (projectItems.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'project-empty';
+    empty.innerHTML = '<strong>暂无对话项目</strong><small>新建项目后，会在 Pi sessions 目录里生成对应的会话记录文件夹。</small>';
+    grid.appendChild(empty);
+    return;
+  }
+  projectItems.forEach(project => {
+    const available = isProjectAvailable(project);
     const localCount = Object.values(sessions).filter(s => getSessionKind(s) === AGENT_SCOPE && (s.projectId || 'default') === project.id).length;
     const count = Number.isFinite(project.sessionCount) ? project.sessionCount : localCount;
     const card = document.createElement('button');
-    card.className = 'project-card' + (project.id === getActiveProjectId() ? ' active' : '');
+    card.className = 'project-card' + (project.id === getActiveProjectId() ? ' active' : '') + (available ? '' : ' unavailable');
+    if (!available) card.setAttribute('aria-disabled', 'true');
     card.innerHTML = `
-      <span class="project-card-kicker">${count} 个 Agent 会话</span>
+      <span class="project-card-kicker">${count} 个 Agent 会话${available ? '' : ' · 缺失'}</span>
       <strong>${escapeHtml(project.name)}</strong>
-      <small>${escapeHtml(project.path || '未设置路径')}</small>
+      <small>项目文件夹：${escapeHtml(project.path || '未设置路径')}</small>
+      <small>会话记录：${escapeHtml(project.sessionDir || '未设置路径')}</small>
+      ${available ? '' : `<span class="project-card-status">${escapeHtml(projectUnavailableReason(project))}</span>`}
       <span class="project-card-actions">
-        <span class="project-action" data-action="edit">编辑</span>
         <span class="project-action danger" data-action="delete">删除</span>
       </span>
     `;
     card.onclick = event => {
       const action = event.target?.dataset?.action;
-      if (action === 'edit') {
-        event.stopPropagation();
-        openProjectForm(project.id);
-        return;
-      }
       if (action === 'delete') {
         event.stopPropagation();
         deleteProject(project.id);
+        return;
+      }
+      if (!available) {
+        showToast(projectUnavailableReason(project), 'var(--rose)');
         return;
       }
       setActiveProject(project.id);
     };
     card.ondblclick = event => {
       if (event.target?.dataset?.action) return;
+      if (!available) {
+        showToast(projectUnavailableReason(project), 'var(--rose)');
+        return;
+      }
       setActiveProject(project.id);
       document.querySelector('[data-tab=agent]')?.click();
     };
@@ -1186,7 +1302,6 @@ function removeProjectLocally(projectId) {
   if (activeProjectIdCache === projectId) {
     activeProjectIdCache = Object.keys(projectsCache)[0] || null;
   }
-  persistProjects();
   persistActiveProject();
   syncedPiProjects.delete(projectId);
   const visibleSessionIds = getVisibleSessionIds();
@@ -1194,6 +1309,10 @@ function removeProjectLocally(projectId) {
 }
 
 function createSession() {
+  if (isAgentWorkspace() && !isProjectAvailable(getActiveProject())) {
+    showToast('请新建项目或恢复项目文件夹', 'var(--rose)');
+    return null;
+  }
   const s = getSessions();
   const id = 's_' + Date.now();
   s[id] = {
@@ -1527,6 +1646,15 @@ async function refreshChat() {
       document.querySelector('[data-tab=config]')?.click();
       setConfigScope(isAgentWorkspace() ? AGENT_SCOPE : CHAT_SCOPE);
     };
+    inputArea.style.display = 'none';
+    renderProjectControls();
+    renderSessionList();
+    return;
+  }
+  if (isAgentWorkspace() && !isProjectAvailable(getActiveProject())) {
+    messagesEl.innerHTML = `<div class="no-config"><div class="icon">&#9670;</div><p>请新建项目或恢复项目文件夹</p><button id="emptyProjectBtn">前往项目</button></div>`;
+    const emptyProjectBtn = $('emptyProjectBtn');
+    if (emptyProjectBtn) emptyProjectBtn.onclick = () => document.querySelector('[data-tab=projects]')?.click();
     inputArea.style.display = 'none';
     renderProjectControls();
     renderSessionList();
@@ -2251,6 +2379,11 @@ async function sendMessage() {
   if (!cfg || (requestIsAgent ? !isCliConfig(cfg) : isCliConfig(cfg))) {
     document.querySelector('[data-tab=config]')?.click();
     setConfigScope(requestWorkspace);
+    return;
+  }
+  if (requestIsAgent && !isProjectAvailable(getActiveProject())) {
+    showToast('请新建项目或恢复项目文件夹', 'var(--rose)');
+    document.querySelector('[data-tab=projects]')?.click();
     return;
   }
 
