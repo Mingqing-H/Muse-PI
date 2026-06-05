@@ -43,7 +43,10 @@
       <div class="project-switcher" id="projectSwitcher">
         <label>当前项目</label>
         <div class="project-select-row">
-          <select id="projectSelect"></select>
+          <div class="custom-select" id="projectSelect">
+            <button class="custom-select-trigger" id="projectSelectTrigger">选择项目</button>
+            <ul class="custom-select-dropdown" id="projectSelectDropdown"></ul>
+          </div>
           <button id="btnNewProject" title="新建项目">+</button>
         </div>
       </div>
@@ -57,9 +60,6 @@
       <div class="messages" id="messages"></div>
       <div class="input-area" id="inputArea" style="display:none">
         <div class="runbar">
-          <div class="agent-task-mode" id="modeSwitch">
-            <span>任务</span>
-          </div>
           <span id="activeProjectHint"></span>
         </div>
         <div class="input-row">

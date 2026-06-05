@@ -731,22 +731,28 @@ function renderProjectControls() {
   if ($('projectBadge')) $('projectBadge').textContent = isAgentWorkspace() ? (project?.name || '本地工作区') : '对话无需项目';
   if ($('activeProjectHint')) $('activeProjectHint').textContent = isAgentWorkspace() && project ? project.path || project.name : '';
   if ($('projectSwitcher')) $('projectSwitcher').style.display = isAgentWorkspace() ? '' : 'none';
-  if ($('modeSwitch')) $('modeSwitch').style.display = isAgentWorkspace() ? '' : 'none';
   if ($('btnNewSession')) $('btnNewSession').textContent = isAgentWorkspace() ? '+ 新建 Agent 会话' : '+ 新建对话';
   if ($('input')) $('input').placeholder = isAgentWorkspace() ? '描述要在当前项目中执行的任务...' : '输入消息...';
 
-  const select = $('projectSelect');
-  if (!select) return;
-  select.innerHTML = '';
-  Object.values(getProjects())
-    .sort((a, b) => (b.updated || 0) - (a.updated || 0))
-    .forEach(projectItem => {
-      const option = document.createElement('option');
-      option.value = projectItem.id;
-      option.textContent = projectItem.name;
-      option.selected = projectItem.id === getActiveProjectId();
-      select.appendChild(option);
-    });
+  const trigger = $('projectSelectTrigger');
+  const dropdown = $('projectSelectDropdown');
+  if (!trigger || !dropdown) return;
+  dropdown.innerHTML = '';
+  const projects = Object.values(getProjects()).sort((a, b) => (b.updated || 0) - (a.updated || 0));
+  const activeId = getActiveProjectId();
+  const activeProject = projects.find(p => p.id === activeId);
+  trigger.textContent = activeProject ? activeProject.name : '选择项目';
+  projects.forEach(projectItem => {
+    const li = document.createElement('li');
+    li.className = 'custom-select-option' + (projectItem.id === activeId ? ' selected' : '');
+    li.textContent = projectItem.name;
+    li.dataset.value = projectItem.id;
+    li.onclick = () => {
+      setActiveProject(projectItem.id);
+      $('projectSelect')?.classList.remove('open');
+    };
+    dropdown.appendChild(li);
+  });
 }
 
 function renderProjects() {
@@ -791,19 +797,19 @@ function renderProjects() {
   });
 }
 
-if ($('projectSelect')) $('projectSelect').onchange = e => setActiveProject(e.target.value);
+if ($('projectSelectTrigger')) {
+  $('projectSelectTrigger').onclick = e => {
+    e.stopPropagation();
+    $('projectSelect')?.classList.toggle('open');
+  };
+  document.addEventListener('click', e => {
+    if (!$('projectSelect')?.contains(e.target)) $('projectSelect')?.classList.remove('open');
+  });
+}
 if ($('btnNewProject')) $('btnNewProject').onclick = () => openProjectForm();
 if ($('btnCreateProject')) $('btnCreateProject').onclick = () => openProjectForm();
 if ($('btnOpenProjectChat')) $('btnOpenProjectChat').onclick = () => document.querySelector('[data-tab=agent]')?.click();
 
-document.querySelectorAll('.mode-btn').forEach(btn => {
-  btn.onclick = () => {
-    if (isWorkspaceStreaming()) return;
-    activeRunMode = isAgentWorkspace() ? 'task' : (btn.dataset.mode || 'chat');
-    document.querySelectorAll('.mode-btn').forEach(x => x.classList.toggle('active', x === btn));
-    inputEl.placeholder = isAgentWorkspace() ? '描述要在当前项目中执行的任务...' : '输入消息...';
-  };
-});
 
 // Sessions
 function getSessions() { return sessionsCache; }
