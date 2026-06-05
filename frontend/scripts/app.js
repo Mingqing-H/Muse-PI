@@ -8,6 +8,7 @@ const PRESETS = [
   { name: 'SiliconFlow', url: 'https://api.siliconflow.cn/v1/chat/completions', models: ['deepseek-ai/DeepSeek-V3', 'Qwen/Qwen2.5-72B-Instruct', 'Pro/deepseek-ai/DeepSeek-V3'] },
   { name: 'Pi CLI',   url: '', models: ['default'], kind: 'cli' },
 ];
+const PI_MODEL_OPTIONS = PRESETS.find(p => p.name === 'Pi CLI')?.models || ['default'];
 const CHAT_SCOPE = 'chat';
 const AGENT_SCOPE = 'agent';
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
@@ -32,6 +33,9 @@ let activePresetIndex = -1;
 let activeConfigScope = CHAT_SCOPE;
 let activeWorkspace = CHAT_SCOPE;
 let activeRunMode = 'chat';
+let piModelOptionsCache = null;
+let piModelOptionsError = '';
+let agentModelSearchValue = '';
 const syncedPiProjects = new Set();
 const streamingByScope = { [CHAT_SCOPE]: false, [AGENT_SCOPE]: false };
 const abortControllersByScope = { [CHAT_SCOPE]: null, [AGENT_SCOPE]: null };
@@ -189,6 +193,7 @@ function setWorkspaceStreaming(scope, value, controller = null) {
   streamingByScope[scope] = !!value;
   abortControllersByScope[scope] = value ? controller : null;
   updateSendButtonState();
+  updateAgentModelPicker();
 }
 
 function updateSendButtonState() {
@@ -554,6 +559,163 @@ function updateModelBadge() {
   else { b.textContent = '未配置'; b.classList.add('empty'); }
 }
 
+function getAgentModelName() {
+  const cfg = getConfig(AGENT_SCOPE);
+  return (cfg?.modelName || 'default').trim() || 'default';
+}
+
+function getAgentModelOptions() {
+  const current = getAgentModelName();
+  const discovered = (piModelOptionsCache || []).map(model => model.value || model.id || model).filter(Boolean);
+  const fallback = discovered.length ? [] : PI_MODEL_OPTIONS;
+  return Array.from(new Set([current, ...discovered, ...fallback])).filter(Boolean);
+}
+
+async function refreshPiModelOptions() {
+  if (!USE_DATABASE) return;
+  try {
+    const data = await apiRequest('/api/pi-models');
+    piModelOptionsCache = Array.isArray(data.models) ? data.models : [];
+    piModelOptionsError = data.error || (!piModelOptionsCache.length && data.raw ? data.raw.trim() : '');
+  } catch (err) {
+    console.error(err);
+    piModelOptionsError = err.message || '模型列表读取失败';
+  }
+}
+
+function setAgentModelName(modelName) {
+  const model = (modelName || '').trim() || 'default';
+  const store = toConfigStore(configCache);
+  let provider = store.activeAgentProvider || 'Pi CLI';
+  if (!isCliProviderName(provider)) provider = 'Pi CLI';
+  const existing = store.providers[provider] || {
+    provider,
+    apiUrl: '',
+    apiKey: '',
+    modelName: 'default',
+  };
+  store.activeAgentProvider = provider;
+  store.providers[provider] = { ...existing, provider, apiKey: '', modelName: model };
+  configCache = store;
+  persistConfig();
+  updateModelBadge();
+  updateAgentModelPicker();
+  showToast(`Agent 模型已切换为 ${model}`, 'var(--accent)');
+}
+
+function renderAgentModelMenu() {
+  const menu = $('agentModelMenu');
+  if (!menu) return;
+  const current = getAgentModelName();
+  const query = agentModelSearchValue.trim().toLowerCase();
+  const allOptions = getAgentModelOptions();
+  const visibleOptions = query
+    ? allOptions.filter(model => model.toLowerCase().includes(query))
+    : allOptions;
+  menu.innerHTML = '';
+
+  const search = document.createElement('input');
+  search.id = 'agentModelSearchInput';
+  search.className = 'agent-model-search';
+  search.type = 'text';
+  search.spellcheck = false;
+  search.placeholder = '搜索模型，或输入自定义模型后按 Enter';
+  search.value = agentModelSearchValue;
+  search.oninput = () => {
+    agentModelSearchValue = search.value;
+    renderAgentModelMenu();
+  };
+  search.onkeydown = event => {
+    if (event.key === 'Enter') {
+      const value = search.value.trim();
+      if (!value) return;
+      event.preventDefault();
+      closeAgentModelMenu();
+      setAgentModelName(value);
+    }
+  };
+  menu.appendChild(search);
+
+  const list = document.createElement('div');
+  list.className = 'agent-model-list';
+  menu.appendChild(list);
+
+  visibleOptions.forEach(model => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'agent-model-option';
+    btn.classList.toggle('active', model === current);
+    btn.textContent = model;
+    btn.onpointerdown = event => {
+      event.preventDefault();
+      closeAgentModelMenu();
+      setAgentModelName(model);
+    };
+    list.appendChild(btn);
+  });
+
+  if (!visibleOptions.length) {
+    const empty = document.createElement('div');
+    empty.className = 'agent-model-empty';
+    empty.textContent = agentModelSearchValue.trim()
+      ? '没有匹配项，按 Enter 可使用当前输入作为自定义模型。'
+      : '没有可展示的模型。';
+    list.appendChild(empty);
+  }
+
+  if (piModelOptionsError && !(piModelOptionsCache || []).length) {
+    const note = document.createElement('div');
+    note.className = 'agent-model-note';
+    note.textContent = '没有读到 Pi 模型列表，可在搜索框输入终端 /model 里看到的模型 ID，然后按 Enter。';
+    menu.appendChild(note);
+  }
+
+  requestAnimationFrame(() => {
+    const input = $('agentModelSearchInput');
+    if (!input || document.activeElement === input) return;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+}
+
+function closeAgentModelMenu() {
+  $('agentModelPicker')?.classList.remove('open');
+}
+
+function toggleAgentModelMenu() {
+  const picker = $('agentModelPicker');
+  if (!picker || picker.classList.contains('hidden')) return;
+  const opening = !picker.classList.contains('open');
+  document.querySelectorAll('.agent-model-picker.open').forEach(el => el.classList.remove('open'));
+  if (opening) {
+    agentModelSearchValue = '';
+    renderAgentModelMenu();
+    picker.classList.add('open');
+    if (USE_DATABASE) {
+      const menu = $('agentModelMenu');
+      if (menu) menu.insertAdjacentHTML('afterbegin', '<div class="agent-model-loading">正在读取 Pi 模型...</div>');
+      refreshPiModelOptions().then(() => {
+        if (picker.classList.contains('open')) renderAgentModelMenu();
+      });
+    }
+  }
+}
+
+function updateAgentModelPicker() {
+  const picker = $('agentModelPicker');
+  const label = $('agentModelLabel');
+  const trigger = $('agentModelTrigger');
+  if (!picker || !label || !trigger) return;
+  const visible = isAgentWorkspace();
+  picker.classList.toggle('hidden', !visible);
+  if (!visible) closeAgentModelMenu();
+  const model = getAgentModelName();
+  label.textContent = model;
+  trigger.disabled = isWorkspaceStreaming(AGENT_SCOPE);
+  trigger.title = `Pi Agent 模型：${model}`;
+  if (picker.classList.contains('open')) renderAgentModelMenu();
+}
+
 // Projects
 function getProjects() { ensureDefaultProject(); return projectsCache; }
 function getActiveProjectId() { ensureDefaultProject(); return activeProjectIdCache; }
@@ -741,6 +903,7 @@ function renderProjectControls() {
   if ($('projectSwitcher')) $('projectSwitcher').style.display = isAgentWorkspace() ? '' : 'none';
   if ($('btnNewSession')) $('btnNewSession').textContent = isAgentWorkspace() ? '+ 新建 Agent 会话' : '+ 新建对话';
   if ($('input')) $('input').placeholder = isAgentWorkspace() ? '描述要在当前项目中执行的任务...' : '输入消息...';
+  updateAgentModelPicker();
 
   const trigger = $('projectSelectTrigger');
   const dropdown = $('projectSelectDropdown');
@@ -1105,6 +1268,21 @@ const sendBtn = $('sendBtn');
 const inputArea = $('inputArea');
 const chatLayoutEl = document.querySelector('.chat-layout');
 const sidebarToggle = $('sidebarToggle');
+const agentModelTrigger = $('agentModelTrigger');
+const agentModelPicker = $('agentModelPicker');
+
+if (agentModelTrigger) {
+  agentModelTrigger.onclick = event => {
+    event.stopPropagation();
+    toggleAgentModelMenu();
+  };
+}
+
+if (agentModelPicker) {
+  agentModelPicker.addEventListener('click', event => event.stopPropagation());
+}
+
+document.addEventListener('click', closeAgentModelMenu);
 
 function setSidebarCollapsed(collapsed, persist = true) {
   if (!chatLayoutEl || !sidebarToggle) return;
@@ -1727,6 +1905,7 @@ async function readCliStream(prompt, messages, context, onDelta, onSession) {
       projectId: context.projectId,
       piSessionPath: context.piSessionPath || '',
       mode: context.mode,
+      modelName: context.modelName || '',
       prompt,
       messages,
     }),
@@ -1977,6 +2156,7 @@ async function sendMessage() {
           projectId: requestProjectId,
           piSessionPath: requestPiSessionPath,
           mode: requestRunMode,
+          modelName: cfg.modelName,
           signal: controller.signal,
         },
         onDelta,

@@ -8,6 +8,7 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -591,6 +592,186 @@ def inspect_pi_cli(command=""):
     }
 
 
+ANSI_PATTERN = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def pi_command_base_args(command=""):
+    args = split_command((command or "").strip() or "pi")
+    if not args:
+        args = ["pi"]
+
+    cleaned = []
+    skip_next = False
+    value_flags = {
+        "--model",
+        "--provider",
+        "--api-key",
+        "--system-prompt",
+        "--append-system-prompt",
+        "--mode",
+        "--session",
+        "--fork",
+        "--session-dir",
+        "--models",
+        "--tools",
+        "-t",
+        "--thinking",
+    }
+    drop_flags = {
+        "--print",
+        "-p",
+        "--continue",
+        "-c",
+        "--resume",
+        "-r",
+        "--no-session",
+    }
+    for index, arg in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if index > 0 and arg in value_flags:
+            skip_next = True
+            continue
+        if index > 0 and any(arg.startswith(f"{flag}=") for flag in value_flags):
+            continue
+        if index > 0 and arg in drop_flags:
+            if arg in {"--print", "-p"} and index + 1 < len(args) and args[index + 1] == "{prompt}":
+                skip_next = True
+            continue
+        if arg == "{prompt}":
+            continue
+        cleaned.append(arg)
+    return resolve_command_args(cleaned or ["pi"])
+
+
+def parse_pi_list_models_output(output):
+    models = []
+    seen = set()
+    for raw_line in (output or "").splitlines():
+        line = ANSI_PATTERN.sub("", raw_line).strip()
+        if not line:
+            continue
+        lowered = line.lower()
+        if (
+            lowered.startswith("warning:")
+            or lowered.startswith("no models")
+            or lowered.startswith("use /login")
+            or lowered.endswith("providers.md")
+            or lowered.endswith("models.md")
+        ):
+            continue
+
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].lower() == "provider" and parts[1].lower() == "model":
+            continue
+        if len(parts) >= 2:
+            provider, model = parts[0], parts[1]
+            if provider and model and provider.lower() not in {"provider", "warning:"}:
+                value = f"{provider}/{model}"
+                if value not in seen:
+                    seen.add(value)
+                    models.append({"value": value, "provider": provider, "id": model, "source": "pi"})
+    return models
+
+
+def load_custom_pi_models():
+    models_path = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent")) / "models.json"
+    try:
+        config = json.loads(models_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    models = []
+    seen = set()
+    providers = config.get("providers") if isinstance(config, dict) else None
+    if not isinstance(providers, dict):
+        return []
+    for provider, provider_config in providers.items():
+        provider_models = provider_config.get("models") if isinstance(provider_config, dict) else None
+        if not isinstance(provider_models, list):
+            continue
+        for model_config in provider_models:
+            if not isinstance(model_config, dict):
+                continue
+            model_id = str(model_config.get("id") or "").strip()
+            if not model_id:
+                continue
+            value = f"{provider}/{model_id}"
+            if value in seen:
+                continue
+            seen.add(value)
+            models.append(
+                {
+                    "value": value,
+                    "provider": provider,
+                    "id": model_id,
+                    "name": model_config.get("name") or model_id,
+                    "source": "models.json",
+                }
+            )
+    return models
+
+
+def load_enabled_pi_models():
+    settings_path = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent")) / "settings.json"
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    enabled_models = settings.get("enabledModels") if isinstance(settings, dict) else None
+    if not isinstance(enabled_models, list):
+        return []
+
+    models = []
+    seen = set()
+    for item in enabled_models:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        models.append({"value": value, "id": value, "source": "settings.json"})
+    return models
+
+
+def list_pi_models(command=""):
+    args = [*pi_command_base_args(command), "--list-models"]
+    raw_output = ""
+    error = ""
+    try:
+        proc = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=12,
+        )
+        raw_output = proc.stdout or ""
+        if proc.returncode != 0:
+            error = f"Pi CLI exited with code {proc.returncode}."
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        error = str(exc)
+
+    merged = []
+    seen = set()
+    for model in [*parse_pi_list_models_output(raw_output), *load_custom_pi_models(), *load_enabled_pi_models()]:
+        value = model.get("value")
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        merged.append(model)
+
+    return {
+        "models": merged,
+        "error": error,
+        "raw": raw_output,
+        "args": args,
+    }
+
+
 def pi_session_root():
     configured = os.environ.get("PI_CODING_AGENT_SESSION_DIR")
     if configured:
@@ -842,13 +1023,29 @@ def add_pi_session_args(args, session_path):
     return [args[0], "--session", session_path, *args[1:]]
 
 
-def stream_local_cli(command, prompt, cwd, session_path=None):
+def has_explicit_pi_model_args(args):
+    for arg in args[1:]:
+        if arg == "--model" or arg.startswith("--model="):
+            return True
+    return False
+
+
+def add_pi_model_args(args, model_name):
+    model = (model_name or "").strip()
+    if not model or model == "default" or not args or has_explicit_pi_model_args(args):
+        return args
+    return [args[0], "--model", model, *args[1:]]
+
+
+def stream_local_cli(command, prompt, cwd, session_path=None, model_name=None):
     if "{prompt}" in command:
         args = add_pi_session_args(split_command(command), session_path)
+        args = add_pi_model_args(args, model_name)
         args = [arg.replace("{prompt}", prompt) for arg in args]
         stdin_payload = None
     else:
         args = add_pi_session_args(split_command(command), session_path)
+        args = add_pi_model_args(args, model_name)
         stdin_payload = prompt
 
     args = resolve_command_args(args)
@@ -892,9 +1089,9 @@ def stream_local_cli(command, prompt, cwd, session_path=None):
         yield {"error": f"Pi CLI 已退出，退出码 {code}。"}
 
 
-def stream_pi_cli(command, prompt, cwd, session_path=None):
+def stream_pi_cli(command, prompt, cwd, session_path=None, model_name=None):
     started_at = time.time()
-    for event in stream_local_cli(command, prompt, cwd, session_path):
+    for event in stream_local_cli(command, prompt, cwd, session_path, model_name):
         yield event
 
     final_session = Path(session_path) if session_path else latest_pi_session_file(cwd, started_at)
@@ -953,12 +1150,13 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
             return
 
         command = normalize_pi_command(provider_config.get("apiUrl"))
+        model_name = (payload.get("modelName") or provider_config.get("modelName") or "").strip()
         prompt = payload.get("prompt")
         if prompt is None:
             prompt = latest_user_prompt(payload.get("messages") or [])
         cwd = resolve_project_cwd(project)
         session_path = resolve_pi_session_path(payload.get("piSessionPath"))
-        self.stream_ndjson(stream_pi_cli(command, prompt, cwd, session_path))
+        self.stream_ndjson(stream_pi_cli(command, prompt, cwd, session_path, model_name))
 
     def handle_pick_folder(self):
         """打开 Windows 原生文件夹选择对话框（IFileDialog），返回选中的路径。"""
@@ -1151,6 +1349,14 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
                 provider = (config or {}).get("activeAgentProvider")
                 provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
                 self.send_json(inspect_pi_cli(provider_config.get("apiUrl") if provider == "Pi CLI" else ""))
+            return
+
+        if self.path == "/api/pi-models":
+            with db_connection() as conn:
+                config = load_config(conn)
+                provider = (config or {}).get("activeAgentProvider")
+                provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
+                self.send_json(list_pi_models(provider_config.get("apiUrl") if provider == "Pi CLI" else ""))
             return
 
         if self.path == "/api/pick-folder":
