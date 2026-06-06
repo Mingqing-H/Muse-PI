@@ -2270,6 +2270,11 @@ function loadDeferredProjectImages(gallery) {
   });
 }
 
+function restoreMessagesScrollTop(scrollTop) {
+  const maxScrollTop = Math.max(0, messagesEl.scrollHeight - messagesEl.clientHeight);
+  messagesEl.scrollTop = Math.min(scrollTop, maxScrollTop);
+}
+
 function extractProjectImagePaths(content) {
   const seen = new Set();
   const paths = [];
@@ -2380,6 +2385,7 @@ function appendProjectImagePreviews(bubble, content, meta = {}) {
   if (isExpanded) loadDeferredProjectImages(gallery);
 
   toggle.addEventListener('click', () => {
+    const previousScrollTop = messagesEl.scrollTop;
     const expanded = !panel.classList.contains('expanded');
     panel.classList.toggle('expanded', expanded);
     gallery.hidden = !expanded;
@@ -2388,8 +2394,9 @@ function appendProjectImagePreviews(bubble, content, meta = {}) {
     bubble.dataset.projectImagesExpanded = expanded ? '1' : '0';
     if (expanded) {
       loadDeferredProjectImages(gallery);
-      scrollToBottom();
     }
+    restoreMessagesScrollTop(previousScrollTop);
+    requestAnimationFrame(() => restoreMessagesScrollTop(previousScrollTop));
   });
 
   panel.appendChild(toggle);
