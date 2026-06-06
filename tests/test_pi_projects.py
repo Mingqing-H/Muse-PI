@@ -163,6 +163,64 @@ class PiProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "项目文件夹不存在"):
             server.resolve_project_cwd({"path": str(missing_dir)})
 
+    def test_project_image_allows_external_absolute_path(self):
+        project_dir = self.base / "workspace" / "image-project"
+        project_dir.mkdir(parents=True)
+        external_image = self.base / "outside images" / "external image.png"
+        external_image.parent.mkdir()
+        external_image.write_bytes(b"image")
+
+        resolved = server.resolve_project_image_path({"path": str(project_dir)}, str(external_image))
+
+        self.assertEqual(resolved, external_image.resolve())
+
+    def test_project_image_allows_windows_path_with_space_after_drive(self):
+        project_dir = self.base / "workspace" / "image-project"
+        project_dir.mkdir(parents=True)
+        external_image = self.base / "outside images" / "external image.png"
+        external_image.parent.mkdir()
+        external_image.write_bytes(b"image")
+        image_path = str(external_image).replace(":", ": ", 1)
+
+        resolved = server.resolve_project_image_path({"path": str(project_dir)}, image_path)
+
+        self.assertEqual(resolved, external_image.resolve())
+
+    def test_project_image_falls_back_to_common_local_folders_for_filename(self):
+        project_dir = self.base / "workspace" / "image-project"
+        project_dir.mkdir(parents=True)
+        desktop_image = self.base / "Desktop" / "external image.png"
+        desktop_image.parent.mkdir()
+        desktop_image.write_bytes(b"image")
+
+        with patch.object(server.Path, "home", return_value=self.base):
+            resolved = server.resolve_project_image_path({"path": str(project_dir)}, "external image.png")
+
+        self.assertEqual(resolved, desktop_image.resolve())
+
+    def test_project_image_prefers_project_file_over_common_local_folder(self):
+        project_dir = self.base / "workspace" / "image-project"
+        project_dir.mkdir(parents=True)
+        project_image = project_dir / "same.png"
+        project_image.write_bytes(b"project")
+        desktop_image = self.base / "Desktop" / "same.png"
+        desktop_image.parent.mkdir()
+        desktop_image.write_bytes(b"desktop")
+
+        with patch.object(server.Path, "home", return_value=self.base):
+            resolved = server.resolve_project_image_path({"path": str(project_dir)}, "same.png")
+
+        self.assertEqual(resolved, project_image.resolve())
+
+    def test_project_image_rejects_relative_path_outside_project(self):
+        project_dir = self.base / "workspace" / "image-project"
+        project_dir.mkdir(parents=True)
+        outside_image = project_dir.parent / "outside.png"
+        outside_image.write_bytes(b"image")
+
+        with self.assertRaises(ValueError):
+            server.resolve_project_image_path({"path": str(project_dir)}, "../outside.png")
+
     def test_delete_rejects_root_nested_and_outside_paths(self):
         self.session_root.mkdir(parents=True)
         nested = self.session_root / "project" / "nested"

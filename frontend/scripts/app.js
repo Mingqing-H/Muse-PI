@@ -2249,7 +2249,12 @@ function applyMathFallback(element) {
 
 function normalizeProjectImagePath(value) {
   let path = (value || '').trim();
+  if (path.startsWith('<') && path.endsWith('>')) path = path.slice(1, -1).trim();
+  const imageTarget = path.match(new RegExp(`^([\\s\\S]*?\\.(${IMAGE_EXT_PATTERN}))(?:\\s+["'][\\s\\S]*["'])?$`, 'i'));
+  if (imageTarget) path = imageTarget[1].trim();
+  path = path.replace(/^([a-z]):(?:\s+|%20)+([\\/])/i, '$1:$2');
   path = path.replace(/^[*`"'“”‘’（(【\[]+|[*`"'“”‘’。.,，、；;：:！!？?）)】\]]+$/g, '');
+  path = path.replace(/^[<([{]+|[>\])}.,;!?]+$/g, '');
   path = path.split(/[?#]/)[0].replace(/\\/g, '/').trim();
   if (!path || path.startsWith('/')) return '';
   if (/^[a-z][a-z\d+.-]*:/i.test(path) && !/^[a-z]:\//i.test(path)) return '';
@@ -2276,25 +2281,60 @@ function restoreMessagesScrollTop(scrollTop) {
 }
 
 function extractProjectImagePaths(content) {
+  const source = content || '';
   const seen = new Set();
   const paths = [];
-  const add = value => {
+  const claimedRanges = [];
+  const add = (value, range) => {
     const path = normalizeProjectImagePath(value);
     if (!path || seen.has(path)) return;
     const pathKey = path.toLowerCase();
-    if (!/^[a-z]:\//i.test(path) && paths.some(existing => existing.toLowerCase().endsWith(`/${pathKey}`))) return;
+    if (!/^[a-z]:\//i.test(path) && paths.some(existing => existing.toLowerCase().endsWith(`/${pathKey}`))) {
+      if (range) claimedRanges.push(range);
+      return;
+    }
     seen.add(path);
     paths.push(path);
+    if (range) claimedRanges.push(range);
   };
 
-  const markdownPattern = /!?\[[^\]]*]\(([^)\s]+(?:\s+[^)]*)?)\)/g;
-  for (const match of (content || '').matchAll(markdownPattern)) add(match[1]);
+  const markdownAnglePattern = /!?\[[^\]]*]\(<([^>\r\n]+)>\)/g;
+  for (const match of source.matchAll(markdownAnglePattern)) {
+    add(match[1], [match.index, match.index + match[0].length]);
+  }
 
-  const absoluteWindowsPattern = new RegExp(`[A-Za-z]:[\\\\/][^\\s<>"'“”‘’|]+?\\.(${IMAGE_EXT_PATTERN})`, 'gi');
-  for (const match of (content || '').matchAll(absoluteWindowsPattern)) add(match[0]);
+  const markdownPattern = /!?\[[^\]]*]\(([^)\r\n]+)\)/g;
+  for (const match of source.matchAll(markdownPattern)) {
+    add(match[1], [match.index, match.index + match[0].length]);
+  }
+
+  const absoluteWindowsPattern = new RegExp(`[A-Za-z]:\\s*[\\\\/][^\\r\\n<>"'“”‘’|]+?\\.(${IMAGE_EXT_PATTERN})`, 'gi');
+  for (const match of source.matchAll(absoluteWindowsPattern)) {
+    add(match[0], [match.index, match.index + match[0].length]);
+  }
+
+  const filenameSource = source.split('').map((char, index) =>
+    claimedRanges.some(([start, end]) => index >= start && index < end) ? ' ' : char
+  ).join('');
+
+  const lineImagePattern = new RegExp(`[^\\r\\n|<>"'“”‘’]+?\\.(${IMAGE_EXT_PATTERN})(?=\\s*(?:$|[|,，。；;！!？?）)】\\]]))`, 'gim');
+  for (const match of filenameSource.matchAll(lineImagePattern)) {
+    const relativeStart = match[0].search(/[A-Za-z0-9._\u4e00-\u9fff]/);
+    const valueStart = match.index + Math.max(0, relativeStart);
+    const value = match[0]
+      .slice(Math.max(0, relativeStart))
+      .replace(/^\s*(?:[-*+]|\d+[\s.)、]|[|])\s*/, '')
+      .replace(/^\s*\d+\s+/, '')
+      .trim();
+    add(value, [valueStart, match.index + match[0].length]);
+  }
+
+  const remainingFilenameSource = filenameSource.split('').map((char, index) =>
+    claimedRanges.some(([start, end]) => index >= start && index < end) ? ' ' : char
+  ).join('');
 
   const filenamePattern = new RegExp(`(?:[A-Za-z]:[\\\\/])?\\.?\\/?[^\\s*<>"'“”‘’|：:，。；;！!？?（）()【】\\[\\]]+?\\.(${IMAGE_EXT_PATTERN})`, 'gi');
-  for (const match of (content || '').matchAll(filenamePattern)) add(match[0]);
+  for (const match of remainingFilenameSource.matchAll(filenamePattern)) add(match[0]);
 
   return paths;
 }
@@ -2320,10 +2360,10 @@ function appendProjectImagePreviews(bubble, content, meta = {}) {
       img.parentNode.insertBefore(link, img);
       link.appendChild(img);
     }
-    renderedPaths.add(path);
+    renderedPaths.add(path.toLowerCase());
   });
 
-  const paths = extractProjectImagePaths(content).filter(path => !renderedPaths.has(path));
+  const paths = extractProjectImagePaths(content).filter(path => !renderedPaths.has(path.toLowerCase()));
   if (!paths.length) return;
 
   const panel = document.createElement('div');

@@ -1252,8 +1252,26 @@ def resolve_project_cwd(project):
     return str(Path((project or {}).get("path")).expanduser())
 
 
+def resolve_common_local_image_path(image_path):
+    if image_path.is_absolute() or image_path.drive:
+        return None
+    home = Path.home()
+    for base in (home / "Desktop", home / "Downloads", home / "Pictures"):
+        candidate = (base / image_path).resolve()
+        try:
+            candidate.relative_to(base.resolve())
+        except ValueError:
+            continue
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    return None
+
+
 def resolve_project_image_path(project, image_path):
     raw_path = (image_path or "").strip().strip("\"'`")
+    if raw_path.startswith("<") and raw_path.endswith(">"):
+        raw_path = raw_path[1:-1].strip()
+    raw_path = re.sub(r"^([A-Za-z]):\s+([\\/])", r"\1:\2", raw_path)
     if not raw_path:
         raise ValueError("图片路径为空。")
 
@@ -1263,11 +1281,18 @@ def resolve_project_image_path(project, image_path):
     if candidate_input.suffix.lower() not in IMAGE_EXTENSIONS:
         raise ValueError("仅支持图片文件。")
 
-    candidate = candidate_input.resolve() if (candidate_input.is_absolute() or candidate_input.drive) else (root / candidate_input).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("图片路径不能超出项目文件夹。") from exc
+    is_external_absolute = candidate_input.is_absolute() or bool(candidate_input.drive)
+    candidate = candidate_input.resolve() if is_external_absolute else (root / candidate_input).resolve()
+    if not is_external_absolute:
+        try:
+            candidate.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("图片路径不能超出项目文件夹。") from exc
+
+    if not candidate.exists() or not candidate.is_file():
+        fallback = resolve_common_local_image_path(candidate_input)
+        if fallback:
+            candidate = fallback
 
     if not candidate.exists() or not candidate.is_file():
         raise FileNotFoundError("图片不存在。")
