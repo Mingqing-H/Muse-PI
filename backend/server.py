@@ -25,7 +25,7 @@ DB_PATH = DATA_DIR / "llm_studio.sqlite"
 HOST = "127.0.0.1"
 PORT = 8765
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 
 PRESET_URLS = {
@@ -134,6 +134,7 @@ def create_schema(conn):
             api_url TEXT NOT NULL,
             api_key TEXT NOT NULL,
             model_name TEXT NOT NULL,
+            enabled_models TEXT NOT NULL DEFAULT '[]',
             updated_at INTEGER NOT NULL
         );
 
@@ -183,6 +184,7 @@ def create_schema(conn):
     ensure_column(conn, "chat_sessions", "pi_session_path", "TEXT")
     ensure_column(conn, "chat_sessions", "pi_session_id", "TEXT")
     ensure_column(conn, "chat_messages", "thinking_ms", "INTEGER")
+    ensure_column(conn, "model_provider_configs", "enabled_models", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_updated
@@ -242,6 +244,20 @@ def delete_meta(conn, *keys):
     conn.executemany("DELETE FROM app_meta WHERE key = ?", [(key,) for key in keys])
 
 
+def normalize_enabled_models(config):
+    if not isinstance(config, dict):
+        return []
+    models = []
+    for model in config.get("enabledModels") or []:
+        value = str(model or "").strip()
+        if value and value not in models:
+            models.append(value)
+    current = str(config.get("modelName") or "").strip()
+    if current and current not in models:
+        models.insert(0, current)
+    return models
+
+
 def normalize_config_store(config):
     if not config:
         return {"activeChatProvider": None, "activeAgentProvider": None, "providers": {}}
@@ -277,6 +293,7 @@ def normalize_config_store(config):
                     "apiUrl": config.get("apiUrl", ""),
                     "apiKey": config.get("apiKey", ""),
                     "modelName": config.get("modelName", ""),
+                    "enabledModels": normalize_enabled_models(config),
                 }
             },
         }
@@ -309,12 +326,13 @@ def save_config(conn, config):
         conn.execute(
             """
             INSERT INTO model_provider_configs
-                (provider, api_url, api_key, model_name, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+                (provider, api_url, api_key, model_name, enabled_models, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider) DO UPDATE SET
                 api_url = excluded.api_url,
                 api_key = excluded.api_key,
                 model_name = excluded.model_name,
+                enabled_models = excluded.enabled_models,
                 updated_at = excluded.updated_at
             """,
             (
@@ -322,6 +340,7 @@ def save_config(conn, config):
                 provider_config.get("apiUrl", ""),
                 provider_config.get("apiKey", ""),
                 provider_config.get("modelName", ""),
+                json.dumps(normalize_enabled_models(provider_config), ensure_ascii=False),
                 timestamp,
             ),
         )
@@ -330,17 +349,25 @@ def save_config(conn, config):
 def load_config(conn):
     rows = conn.execute(
         """
-        SELECT provider, api_url, api_key, model_name
+        SELECT provider, api_url, api_key, model_name, enabled_models
         FROM model_provider_configs
         ORDER BY provider
         """
     ).fetchall()
+    def row_enabled_models(row):
+        try:
+            models = json.loads(row["enabled_models"] or "[]")
+        except json.JSONDecodeError:
+            models = []
+        return normalize_enabled_models({"modelName": row["model_name"], "enabledModels": models})
+
     providers = {
         row["provider"]: {
             "provider": row["provider"],
             "apiUrl": row["api_url"],
             "apiKey": row["api_key"],
             "modelName": row["model_name"],
+            "enabledModels": row_enabled_models(row),
         }
         for row in rows
     }

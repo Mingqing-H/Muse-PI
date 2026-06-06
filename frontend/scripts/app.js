@@ -1,9 +1,9 @@
 const PRESETS = [
   { name: 'MiMo',     url: 'https://token-plan-cn.xiaomimimo.com/v1/chat/completions', models: ['mimo-v2.5-pro', 'mimo-v2.5'] },
-  { name: 'OpenAI',   url: 'https://api.openai.com/v1/chat/completions', models: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o4-mini'] },
+  { name: 'OpenAI',   url: 'https://api.openai.com/v1/chat/completions', models: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'] },
   { name: 'DeepSeek', url: 'https://api.deepseek.com/v1/chat/completions', models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner'] },
-  { name: 'Qwen',     url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', models: ['qwen3.7-max', 'qwen3.6-plus', 'qwen3.6-flash', 'qwen-plus', 'qwen-turbo', 'qwen-max'] },
-  { name: 'GLM',      url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', models: ['glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7', 'glm-4.7-flashx', 'glm-4.7-flash', 'glm-4-long'] },
+  { name: 'Qwen',     url: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', models: ['qwen3.7-max', 'qwen3.6-plus', 'qwen3.6-flash', 'qwen-plus'] },
+  { name: 'GLM',      url: 'https://open.bigmodel.cn/api/paas/v4/chat/completions', models: ['glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7-flash'] },
   { name: 'Kimi',     url: 'https://api.moonshot.cn/v1/chat/completions', models: ['kimi-latest', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'] },
   { name: 'SiliconFlow', url: 'https://api.siliconflow.cn/v1/chat/completions', models: ['deepseek-ai/DeepSeek-V3', 'Qwen/Qwen2.5-72B-Instruct', 'Pro/deepseek-ai/DeepSeek-V3'] },
   { name: 'Pi CLI',   url: '', models: ['default'], kind: 'cli' },
@@ -36,6 +36,7 @@ let activeRunMode = 'chat';
 let piModelOptionsCache = null;
 let piModelOptionsError = '';
 let agentModelSearchValue = '';
+let enabledModelDraft = [];
 const syncedPiProjects = new Set();
 const streamingByScope = { [CHAT_SCOPE]: false, [AGENT_SCOPE]: false };
 const inFlightByScope = { [CHAT_SCOPE]: {}, [AGENT_SCOPE]: {} };
@@ -342,10 +343,15 @@ function renderPresets() {
   presetIndicesForScope().forEach(i => {
     const p = PRESETS[i];
     const btn = document.createElement('button');
-    const hasConfig = !!store.providers[p.name];
-    btn.className = 'preset-btn' + (hasConfig ? ' configured' : '');
+    const saved = store.providers[p.name];
+    const hasConfig = !!saved;
+    btn.className = 'preset-btn'
+      + (hasConfig ? ' configured' : '')
+      + (i === activePresetIndex ? ' active' : '');
     btn.dataset.index = String(i);
-    btn.textContent = p.name;
+    const savedModels = getEnabledModelsForConfig(saved, p);
+    btn.title = hasConfig && savedModels.length ? `${p.name} 已配置：${savedModels.join(', ')}` : p.name;
+    btn.innerHTML = `<span class="preset-name">${escapeHtml(p.name)}</span>${hasConfig ? '<span class="preset-status">已配置</span>' : ''}`;
     btn.onclick = () => applyPreset(i);
     presetsEl.appendChild(btn);
   });
@@ -373,7 +379,9 @@ function applyPreset(i) {
   $('apiUrl').value = saved?.apiUrl || p.url;
   $('apiKey').value = saved?.apiKey || '';
   updateModelDatalist(i);
-  $('modelName').value = saved?.modelName || p.models[0] || '';
+  enabledModelDraft = getEnabledModelsForConfig(saved, p);
+  $('modelName').value = getActiveModelForConfig(saved, enabledModelDraft);
+  renderModelOptions(i);
   syncPresetSelection(i);
   syncProviderFields(i);
 }
@@ -414,7 +422,7 @@ function syncProviderFields(activeIndex) {
   const isCli = preset?.kind === 'cli';
   if ($('apiUrlLabel')) $('apiUrlLabel').innerHTML = isCli ? 'Pi CLI 本地路径 <span class="hint">&mdash; 留空自动识别 pi</span>' : 'API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span>';
   if ($('apiKeyLabel')) $('apiKeyLabel').textContent = 'API Key';
-  if ($('modelNameLabel')) $('modelNameLabel').textContent = isCli ? '显示名称' : '模型名称';
+  if ($('modelNameLabel')) $('modelNameLabel').textContent = isCli ? '显示名称' : '启用模型';
   if ($('apiUrl')) $('apiUrl').placeholder = isCli ? '留空自动识别，或填写 D:\\npm-global\\pi.cmd' : 'https://api.openai.com/v1/chat/completions';
   if ($('apiKey')) $('apiKey').placeholder = 'sk-...';
   if ($('modelName')) $('modelName').placeholder = isCli ? 'default' : 'gpt-4o';
@@ -529,12 +537,71 @@ function syncPresetSelection(activeIndex) {
 
 function updateModelDatalist(activeIndex) {
   const dl = $('model-list');
+  if (!dl) return;
   dl.innerHTML = '';
   if (activeIndex < 0) return;
   PRESETS[activeIndex].models.forEach(m => {
     const o = document.createElement('option');
     o.value = m;
     dl.appendChild(o);
+  });
+}
+
+function uniqueModels(models) {
+  return Array.from(new Set((models || []).map(model => String(model || '').trim()).filter(Boolean)));
+}
+
+function getEnabledModelsForConfig(config, preset = PRESETS[activePresetIndex]) {
+  const configured = uniqueModels(config?.enabledModels);
+  if (configured.length) return configured;
+  const current = (config?.modelName || '').trim();
+  if (current) return [current];
+  return preset?.kind === 'cli' ? [preset?.models?.[0] || 'default'] : [];
+}
+
+function getActiveModelForConfig(config, enabledModels = []) {
+  const configured = (config?.modelName || '').trim();
+  if (configured && (!enabledModels.length || enabledModels.includes(configured))) return configured;
+  return enabledModels[0] || '';
+}
+
+function syncModelDraftValue() {
+  const current = $('modelName')?.value.trim() || '';
+  if (current && enabledModelDraft.includes(current)) return;
+  $('modelName').value = enabledModelDraft[0] || '';
+}
+
+function renderModelOptions(activeIndex = activePresetIndex) {
+  const wrap = $('modelOptions');
+  if (!wrap) return;
+  wrap.innerHTML = '';
+  const preset = PRESETS[activeIndex];
+  if (!preset?.models?.length) {
+    wrap.classList.add('hidden');
+    return;
+  }
+  wrap.classList.toggle('hidden', preset.kind === 'cli');
+  if (preset.kind === 'cli') return;
+
+  enabledModelDraft = uniqueModels(enabledModelDraft).filter(model => preset.models.includes(model));
+  syncModelDraftValue();
+  preset.models.forEach(model => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'model-option-btn';
+    btn.classList.toggle('active', enabledModelDraft.includes(model));
+    btn.textContent = model;
+    btn.title = enabledModelDraft.includes(model) ? '已启用，点击停用' : '点击启用';
+    btn.onclick = () => {
+      if (enabledModelDraft.includes(model)) {
+        enabledModelDraft = enabledModelDraft.filter(item => item !== model);
+      } else {
+        enabledModelDraft = [...enabledModelDraft, model];
+      }
+      syncModelDraftValue();
+      renderModelOptions(activeIndex);
+    };
+    wrap.appendChild(btn);
   });
 }
 
@@ -552,15 +619,18 @@ function loadConfig() {
     const isCli = preset?.kind === 'cli';
     $('apiUrl').value = isCli && isAutoPiCommand(c.apiUrl) ? '' : c.apiUrl || preset?.url || '';
     $('apiKey').value = c.apiKey || '';
-    $('modelName').value = c.modelName || preset?.models?.[0] || '';
+    enabledModelDraft = getEnabledModelsForConfig(c, preset);
+    $('modelName').value = getActiveModelForConfig(c, enabledModelDraft);
   } else {
     $('apiUrl').value = '';
     $('apiKey').value = '';
+    enabledModelDraft = [];
     $('modelName').value = '';
   }
 
   syncPresetSelection(presetIndex);
   updateModelDatalist(presetIndex);
+  renderModelOptions(presetIndex);
   syncProviderFields(presetIndex);
   return c;
 }
@@ -568,7 +638,13 @@ function loadConfig() {
 function getConfig(scope = activeWorkspace) { return getScopedConfig(scope); }
 
 function saveConfig() {
-  const c = { apiUrl: $('apiUrl').value.trim(), apiKey: $('apiKey').value.trim(), modelName: $('modelName').value.trim() };
+  syncModelDraftValue();
+  const c = {
+    apiUrl: $('apiUrl').value.trim(),
+    apiKey: $('apiKey').value.trim(),
+    modelName: $('modelName').value.trim(),
+    enabledModels: uniqueModels(enabledModelDraft),
+  };
   const presetIndex = activePresetIndex >= 0 ? activePresetIndex : getPresetIndexForConfig(c);
   const provider = providerNameForIndex(presetIndex);
   const isCli = isCliProviderName(provider);
@@ -583,10 +659,12 @@ function saveConfig() {
   if (isCli) {
     c.apiKey = '';
     c.modelName = c.modelName || 'default';
-  } else if (!c.apiUrl || !c.apiKey || !c.modelName) {
+    c.enabledModels = [c.modelName];
+  } else if (!c.apiUrl || !c.apiKey || !c.enabledModels.length) {
     showToast('请填写所有字段', 'var(--rose)');
     return false;
   }
+  if (!isCli && !c.modelName) c.modelName = c.enabledModels[0];
   const store = toConfigStore(configCache);
   if (activeConfigScope === AGENT_SCOPE) store.activeAgentProvider = provider;
   else store.activeChatProvider = provider;
@@ -598,7 +676,7 @@ function saveConfig() {
   updateModelDatalist(presetIndex);
   updatePiCliPathStatus();
   refreshPiCliInfo();
-  updateModelBadge(); updateAgentModelPicker(); renderPresets(); showToast('配置已保存', 'var(--accent)'); return true;
+  updateModelBadge(); updateAgentModelPicker(); renderPresets(); renderModelOptions(presetIndex); showToast('配置已保存', 'var(--accent)'); return true;
 }
 
 $('saveBtn').onclick = saveConfig;
@@ -611,12 +689,15 @@ $('clearBtn').onclick = () => {
   configCache = Object.keys(store.providers).length ? store : null;
   if (configCache) persistConfig();
   else clearPersistedConfig();
+  enabledModelDraft = [];
   $('apiUrl').value = ''; $('apiKey').value = ''; $('modelName').value = '';
   document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+  renderModelOptions(activePresetIndex);
   updateModelBadge(); updateAgentModelPicker(); renderPresets(); showToast('配置已清除', 'var(--muted)');
 };
 $('toggleKey').onclick = () => { const i = $('apiKey'); i.type = i.type === 'password' ? 'text' : 'password'; };
 $('apiUrl').addEventListener('input', updatePiCliPathStatus);
+$('modelName').addEventListener('input', () => renderModelOptions(activePresetIndex));
 
 function updateModelBadge() {
   const c = getConfig(), b = $('modelBadge');
@@ -677,7 +758,79 @@ function setAgentModelName(modelName) {
   showToast(`Agent 模型已切换为 ${model}`, 'var(--accent)');
 }
 
+function getChatModelOptions() {
+  const store = toConfigStore(configCache);
+  return Object.entries(store.providers || {})
+    .filter(([provider]) => !isCliProviderName(provider))
+    .flatMap(([provider, cfg]) => {
+      const preset = PRESETS[getPresetIndexForProviderName(provider)] || PRESETS[getPresetIndexForConfig(cfg)];
+      return getEnabledModelsForConfig(cfg, preset).map(model => ({
+        provider,
+        model,
+        label: `${provider} · ${model}`,
+      }));
+    });
+}
+
+function setChatModelName(providerName, modelName) {
+  const model = (modelName || '').trim();
+  const provider = (providerName || '').trim();
+  if (!provider || !model) return;
+  const store = toConfigStore(configCache);
+  if (!provider || !store.providers[provider]) return;
+  const preset = PRESETS[getPresetIndexForProviderName(provider)];
+  const enabledModels = getEnabledModelsForConfig(store.providers[provider], preset);
+  if (!enabledModels.includes(model)) return;
+  store.activeChatProvider = provider;
+  store.providers[provider] = { ...store.providers[provider], modelName: model, enabledModels };
+  configCache = store;
+  persistConfig();
+  updateModelBadge();
+  updateAgentModelPicker();
+  showToast(`对话模型已切换为 ${provider} · ${model}`, 'var(--accent)');
+}
+
+function renderChatModelMenu() {
+  const menu = $('agentModelMenu');
+  if (!menu) return;
+  const current = getConfig(CHAT_SCOPE);
+  const currentProvider = current?.provider || toConfigStore(configCache).activeChatProvider || '';
+  const currentModel = current?.modelName || '';
+  const options = getChatModelOptions();
+  menu.innerHTML = '';
+
+  const list = document.createElement('div');
+  list.className = 'agent-model-list';
+  menu.appendChild(list);
+
+  options.forEach(option => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'agent-model-option';
+    btn.classList.toggle('active', option.provider === currentProvider && option.model === currentModel);
+    btn.innerHTML = `<span class="chat-model-provider">${escapeHtml(option.provider)}</span><span class="chat-model-name">${escapeHtml(option.model)}</span>`;
+    btn.title = option.label;
+    btn.onpointerdown = event => {
+      event.preventDefault();
+      closeAgentModelMenu();
+      setChatModelName(option.provider, option.model);
+    };
+    list.appendChild(btn);
+  });
+
+  if (!options.length) {
+    const empty = document.createElement('div');
+    empty.className = 'agent-model-empty';
+    empty.textContent = '请先在配置里启用可用于对话的模型。';
+    list.appendChild(empty);
+  }
+}
+
 function renderAgentModelMenu() {
+  if (!isAgentWorkspace()) {
+    renderChatModelMenu();
+    return;
+  }
   const menu = $('agentModelMenu');
   if (!menu) return;
   const current = getAgentModelName();
@@ -759,14 +912,13 @@ function closeAgentModelMenu() {
 function toggleAgentModelMenu() {
   const picker = $('agentModelPicker');
   if (!picker || picker.classList.contains('hidden')) return;
-  if (!isAgentWorkspace()) return;
   const opening = !picker.classList.contains('open');
   document.querySelectorAll('.agent-model-picker.open').forEach(el => el.classList.remove('open'));
   if (opening) {
     agentModelSearchValue = '';
     renderAgentModelMenu();
     picker.classList.add('open');
-    if (USE_DATABASE) {
+    if (isAgentWorkspace() && USE_DATABASE) {
       const menu = $('agentModelMenu');
       if (menu) menu.insertAdjacentHTML('afterbegin', '<div class="agent-model-loading">正在读取 Pi 模型...</div>');
       refreshPiModelOptions().then(() => {
@@ -783,13 +935,13 @@ function updateAgentModelPicker() {
   if (!picker || !label || !trigger) return;
   const visible = activeWorkspace === CHAT_SCOPE || isAgentWorkspace();
   picker.classList.toggle('hidden', !visible);
-  picker.classList.toggle('readonly', !isAgentWorkspace());
-  if (!visible || !isAgentWorkspace()) closeAgentModelMenu();
+  picker.classList.toggle('readonly', false);
+  if (!visible) closeAgentModelMenu();
   const chatModel = getConfig(CHAT_SCOPE)?.modelName || '未配置';
   const model = isAgentWorkspace() ? getAgentModelName() : chatModel;
   label.textContent = model;
-  trigger.disabled = isAgentWorkspace() && isActiveSessionStreaming(AGENT_SCOPE);
-  trigger.title = isAgentWorkspace() ? `Pi Agent 模型：${model}` : `当前模型：${model}`;
+  trigger.disabled = isActiveSessionStreaming(activeWorkspace);
+  trigger.title = isAgentWorkspace() ? `Pi Agent 模型：${model}` : `选择对话模型：${model}`;
   if (picker.classList.contains('open')) renderAgentModelMenu();
 }
 
