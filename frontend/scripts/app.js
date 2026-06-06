@@ -131,8 +131,9 @@ async function migrateLocalStorageState() {
 }
 
 function persistConfig() {
-  if (USE_DATABASE) apiRequest('/api/config', { method: 'POST', body: JSON.stringify({ config: configCache }) }).catch(console.error);
-  else localStorage.setItem(STORAGE_KEY, JSON.stringify(configCache));
+  if (USE_DATABASE) return apiRequest('/api/config', { method: 'POST', body: JSON.stringify({ config: configCache }) });
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(configCache));
+  return Promise.resolve({ ok: true });
 }
 
 function ensurePiCliDefaultConfig() {
@@ -592,14 +593,22 @@ function renderModelOptions(activeIndex = activePresetIndex) {
     btn.classList.toggle('active', enabledModelDraft.includes(model));
     btn.textContent = model;
     btn.title = enabledModelDraft.includes(model) ? '已启用，点击停用' : '点击启用';
-    btn.onclick = () => {
+    btn.onclick = async () => {
       if (enabledModelDraft.includes(model)) {
+        if (enabledModelDraft.length <= 1) {
+          showToast('至少保留一个启用模型', 'var(--rose)');
+          return;
+        }
         enabledModelDraft = enabledModelDraft.filter(item => item !== model);
       } else {
         enabledModelDraft = [...enabledModelDraft, model];
       }
       syncModelDraftValue();
       renderModelOptions(activeIndex);
+      if (activeConfigScope === CHAT_SCOPE) {
+        const saved = await saveConfig({ silent: true });
+        if (saved) showToast('启用模型已保存', 'var(--accent)');
+      }
     };
     wrap.appendChild(btn);
   });
@@ -637,7 +646,8 @@ function loadConfig() {
 
 function getConfig(scope = activeWorkspace) { return getScopedConfig(scope); }
 
-function saveConfig() {
+async function saveConfig(options = {}) {
+  const silent = options?.silent === true;
   syncModelDraftValue();
   const c = {
     apiUrl: $('apiUrl').value.trim(),
@@ -670,16 +680,24 @@ function saveConfig() {
   else store.activeChatProvider = provider;
   store.providers[provider] = { ...c, provider };
   configCache = store;
-  persistConfig();
+  try {
+    await persistConfig();
+  } catch (err) {
+    console.error(err);
+    showToast('配置保存失败', 'var(--rose)');
+    return false;
+  }
   activePresetIndex = presetIndex;
   syncPresetSelection(presetIndex);
   updateModelDatalist(presetIndex);
   updatePiCliPathStatus();
   refreshPiCliInfo();
-  updateModelBadge(); updateAgentModelPicker(); renderPresets(); renderModelOptions(presetIndex); showToast('配置已保存', 'var(--accent)'); return true;
+  updateModelBadge(); updateAgentModelPicker(); renderPresets(); renderModelOptions(presetIndex);
+  if (!silent) showToast('配置已保存', 'var(--accent)');
+  return true;
 }
 
-$('saveBtn').onclick = saveConfig;
+$('saveBtn').onclick = () => saveConfig();
 $('clearBtn').onclick = () => {
   const store = toConfigStore(configCache);
   const provider = providerNameForIndex(activePresetIndex);
