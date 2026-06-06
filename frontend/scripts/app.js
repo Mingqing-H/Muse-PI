@@ -1226,6 +1226,16 @@ function getVisibleSessionIds() {
   return isAgentWorkspace() ? getProjectSessionIds() : getChatSessionIds();
 }
 
+function updateAgentBranchBadge(project) {
+  const badge = $('agentBranchBadge');
+  if (!badge) return;
+  const branch = isAgentWorkspace() && isProjectAvailable(project) ? (project?.gitBranch || '') : '';
+  badge.textContent = branch;
+  badge.title = branch ? `Git branch: ${branch}` : '';
+  badge.classList.toggle('hidden', !branch);
+  badge.classList.toggle('detached', Boolean(project?.gitBranchDetached));
+}
+
 function renderProjectControls() {
   const project = getActiveProject();
   const hasUsableProject = isProjectAvailable(project);
@@ -1238,6 +1248,7 @@ function renderProjectControls() {
     $('projectBadge').classList.toggle('hidden', !showProjectBadge);
   }
   if ($('activeProjectHint')) $('activeProjectHint').textContent = isAgentWorkspace() && project ? project.path || project.name : '';
+  updateAgentBranchBadge(project);
   if ($('projectSwitcher')) $('projectSwitcher').style.display = isAgentWorkspace() ? '' : 'none';
   if ($('btnNewSession')) $('btnNewSession').textContent = isAgentWorkspace() ? '+ 新建 Agent 会话' : '+ 新建对话';
   if ($('input')) $('input').placeholder = isAgentWorkspace() ? (hasUsableProject ? '描述要在当前项目中执行的任务...' : '请新建项目或恢复项目文件夹') : '输入消息...';
@@ -1380,7 +1391,8 @@ async function syncPiProjectSessions(projectId = getActiveProjectId(), force = f
         ...sessions[existingId],
         ...piSession,
         id: existingId,
-        title: piSession.title || sessions[existingId].title,
+        title: sessions[existingId].customTitle || piSession.title || sessions[existingId].title,
+        customTitle: sessions[existingId].customTitle || '',
         source: 'pi',
       };
     } else {
@@ -1587,6 +1599,69 @@ function updateSessionById(id, patch) {
   return sessions[id];
 }
 
+function normalizeSessionTitle(title) {
+  return (title || '').replace(/\s+/g, ' ').trim();
+}
+
+function getSessionDisplayTitle(session) {
+  return session?.customTitle || session?.title || '新会话';
+}
+
+function renameSession(id, title) {
+  const nextTitle = normalizeSessionTitle(title);
+  if (!nextTitle) {
+    showToast('会话名不能为空', 'var(--rose)');
+    return false;
+  }
+  updateSessionById(id, { title: nextTitle, customTitle: nextTitle });
+  renderSessionList();
+  showToast('会话名已更新', 'var(--muted)');
+  return true;
+}
+
+function startSessionRename(id, titleEl) {
+  const session = getSessionById(id);
+  if (!session || !titleEl) return;
+  const item = titleEl.closest('.session-item');
+  const currentTitle = getSessionDisplayTitle(session);
+  const input = document.createElement('input');
+  input.className = 'session-title-input';
+  input.type = 'text';
+  input.value = currentTitle;
+  input.maxLength = 80;
+  input.setAttribute('aria-label', '编辑会话名称');
+
+  let finished = false;
+  const finish = shouldSave => {
+    if (finished) return;
+    finished = true;
+    const nextTitle = normalizeSessionTitle(input.value);
+    if (shouldSave && nextTitle && nextTitle !== currentTitle) renameSession(id, nextTitle);
+    else renderSessionList();
+  };
+
+  input.addEventListener('click', e => e.stopPropagation());
+  input.addEventListener('dblclick', e => e.stopPropagation());
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      finish(true);
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      finish(false);
+    }
+  });
+  input.addEventListener('blur', () => finish(true));
+
+  item?.classList.add('renaming');
+  titleEl.replaceWith(input);
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+}
+
 function switchSession(id) {
   const session = getSessionById(id);
   if (session?.completedUnread) updateSessionById(id, { completedUnread: false });
@@ -1623,6 +1698,12 @@ function renderSessionList() {
     const time = document.createElement('div');
     time.className = 'session-time';
     time.textContent = formatTime(s.created);
+    title.textContent = getSessionDisplayTitle(s);
+    title.title = '双击编辑名称';
+    title.ondblclick = e => {
+      e.stopPropagation();
+      startSessionRename(id, title);
+    };
 
     const state = document.createElement('span');
     state.className = 'session-state';
@@ -1638,10 +1719,21 @@ function renderSessionList() {
       showConfirm(`确定删除「${s.title || '新会话'}」？`, () => deleteSessionWithPiOption(id));
     };
 
+    const edit = document.createElement('button');
+    edit.className = 'session-edit';
+    edit.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20h9"></path><path d="m16.5 3.5 4 4L8 20H4v-4L16.5 3.5Z"></path></svg>';
+    edit.title = '编辑名称';
+    edit.setAttribute('aria-label', '编辑会话名称');
+    edit.onclick = e => {
+      e.stopPropagation();
+      startSessionRename(id, title);
+    };
+
     item.onclick = () => switchSession(id);
     item.appendChild(title);
     item.appendChild(time);
     item.appendChild(state);
+    item.appendChild(edit);
     item.appendChild(del);
     list.appendChild(item);
   });
@@ -2491,7 +2583,7 @@ async function legacySendMessage() {
   const userCreated = Date.now();
   session.messages.push({ role: 'user', content: text, created: userCreated });
 
-  if (session.messages.filter(m => m.role === 'user').length === 1) {
+  if (session.messages.filter(m => m.role === 'user').length === 1 && !session.customTitle) {
     const title = text.length > 30 ? text.slice(0, 30) + '...' : text;
     updateActiveSession({ title, kind: session.kind, projectId: session.projectId, mode: session.mode, status: session.status, messages: session.messages, created: session.created });
     renderSessionList();
@@ -2618,7 +2710,7 @@ async function sendMessage() {
     status: session.status,
     messages: session.messages,
   };
-  if (session.messages.filter(m => m.role === 'user').length === 1) {
+  if (session.messages.filter(m => m.role === 'user').length === 1 && !session.customTitle) {
     patch.title = text.length > 30 ? text.slice(0, 30) + '...' : text;
     patch.created = session.created;
   }
@@ -2758,6 +2850,10 @@ async function sendMessage() {
   updateSessionById(requestSessionId, { status: 'idle', completedUnread: finishedAway });
   renderSessionList();
   updateSendButtonState();
+  if (requestIsAgent) {
+    await syncPiProjectFolders(true);
+    renderProjectControls();
+  }
   if (activeWorkspace === requestWorkspace && getActiveId() === requestSessionId) renderMessages();
   else markWorkspaceUnread(requestWorkspace);
 }
@@ -2766,6 +2862,41 @@ function stopStreaming(scope = activeWorkspace, sessionId = getActiveId()) {
   const controller = getSessionFlight(scope, sessionId)?.controller;
   if (controller) controller.abort();
 }
+
+function isRippleEligibleTarget(target) {
+  if (!target || target === document.documentElement) return false;
+  return !target.closest([
+    'button',
+    'a',
+    'input',
+    'textarea',
+    'select',
+    'label',
+    '[contenteditable="true"]',
+    '.msg',
+    '.bubble',
+    '.session-item',
+    '.project-card',
+    '.project-empty',
+    '.custom-select',
+    '.modal-overlay',
+    '.confirm-overlay',
+    '.toast'
+  ].join(','));
+}
+
+function spawnClickRipple(event) {
+  if (event.button !== 0 || !isRippleEligibleTarget(event.target)) return;
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const ripple = document.createElement('span');
+  ripple.className = 'click-ripple';
+  ripple.style.left = `${event.clientX}px`;
+  ripple.style.top = `${event.clientY}px`;
+  document.body.appendChild(ripple);
+  ripple.addEventListener('animationend', () => ripple.remove(), { once: true });
+}
+
+document.addEventListener('pointerdown', spawnClickRipple);
 
 // Init
 async function initApp() {

@@ -156,6 +156,7 @@ def create_schema(conn):
             status TEXT NOT NULL DEFAULT 'idle',
             pi_session_path TEXT,
             pi_session_id TEXT,
+            custom_title TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL
         );
@@ -183,6 +184,7 @@ def create_schema(conn):
     ensure_column(conn, "chat_sessions", "status", "TEXT NOT NULL DEFAULT 'idle'")
     ensure_column(conn, "chat_sessions", "pi_session_path", "TEXT")
     ensure_column(conn, "chat_sessions", "pi_session_id", "TEXT")
+    ensure_column(conn, "chat_sessions", "custom_title", "TEXT")
     ensure_column(conn, "chat_messages", "thinking_ms", "INTEGER")
     ensure_column(conn, "model_provider_configs", "enabled_models", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute(
@@ -445,6 +447,56 @@ def project_path_status(path):
     }
 
 
+def git_branch_status(path):
+    raw = str(path or "").strip()
+    if not raw:
+        return {"gitBranch": "", "gitBranchDetached": False}
+
+    try:
+        folder = Path(raw).expanduser()
+        if not folder.is_dir():
+            return {"gitBranch": "", "gitBranchDetached": False}
+        base_args = ["git", "-C", str(folder)]
+        probe = subprocess.run(
+            [*base_args, "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+        )
+        if probe.returncode != 0 or (probe.stdout or "").strip() != "true":
+            return {"gitBranch": "", "gitBranchDetached": False}
+
+        current = subprocess.run(
+            [*base_args, "branch", "--show-current"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+        )
+        branch = (current.stdout or "").strip()
+        if branch:
+            return {"gitBranch": branch, "gitBranchDetached": False}
+
+        head = subprocess.run(
+            [*base_args, "rev-parse", "--short", "HEAD"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+        )
+        sha = (head.stdout or "").strip()
+        return {"gitBranch": f"detached@{sha}" if sha else "", "gitBranchDetached": bool(sha)}
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {"gitBranch": "", "gitBranchDetached": False}
+
+
 def load_projects(conn):
     return list_pi_session_projects()
 
@@ -478,8 +530,8 @@ def save_sessions(conn, sessions):
         conn.execute(
             """
             INSERT INTO chat_sessions
-                (id, title, kind, project_id, mode, status, pi_session_path, pi_session_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, title, kind, project_id, mode, status, pi_session_path, pi_session_id, custom_title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 session.get("id") or session_id,
@@ -490,6 +542,7 @@ def save_sessions(conn, sessions):
                 session.get("status") or "idle",
                 session.get("piSessionPath"),
                 session.get("piSessionId"),
+                session.get("customTitle"),
                 created_at,
                 timestamp,
             ),
@@ -519,7 +572,7 @@ def load_sessions(conn):
     sessions = {}
     session_rows = conn.execute(
         """
-        SELECT id, title, kind, project_id, mode, status, pi_session_path, pi_session_id, created_at
+        SELECT id, title, kind, project_id, mode, status, pi_session_path, pi_session_id, custom_title, created_at
         FROM chat_sessions
         ORDER BY created_at DESC
         """
@@ -543,6 +596,7 @@ def load_sessions(conn):
             "status": row["status"] or "idle",
             "piSessionPath": row["pi_session_path"],
             "piSessionId": row["pi_session_id"],
+            "customTitle": row["custom_title"],
             "created": row["created_at"],
             "messages": [
                 {
@@ -848,6 +902,7 @@ def create_pi_project(path):
             "sessionDir": str(session_dir),
             "sessionCount": 0,
             **project_path_status(str(folder)),
+            **git_branch_status(str(folder)),
         }
     return {
         "status": status,
@@ -963,6 +1018,7 @@ def list_pi_session_projects():
             "sessionDir": str(session_dir),
             "sessionCount": len(jsonl_files),
             **availability,
+            **git_branch_status(cwd),
         }
     return projects
 
