@@ -598,7 +598,7 @@ function saveConfig() {
   updateModelDatalist(presetIndex);
   updatePiCliPathStatus();
   refreshPiCliInfo();
-  updateModelBadge(); renderPresets(); showToast('配置已保存', 'var(--accent)'); return true;
+  updateModelBadge(); updateAgentModelPicker(); renderPresets(); showToast('配置已保存', 'var(--accent)'); return true;
 }
 
 $('saveBtn').onclick = saveConfig;
@@ -613,15 +613,24 @@ $('clearBtn').onclick = () => {
   else clearPersistedConfig();
   $('apiUrl').value = ''; $('apiKey').value = ''; $('modelName').value = '';
   document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
-  updateModelBadge(); renderPresets(); showToast('配置已清除', 'var(--muted)');
+  updateModelBadge(); updateAgentModelPicker(); renderPresets(); showToast('配置已清除', 'var(--muted)');
 };
 $('toggleKey').onclick = () => { const i = $('apiKey'); i.type = i.type === 'password' ? 'text' : 'password'; };
 $('apiUrl').addEventListener('input', updatePiCliPathStatus);
 
 function updateModelBadge() {
   const c = getConfig(), b = $('modelBadge');
-  if (c && c.modelName) { b.textContent = isCliConfig(c) ? 'Pi CLI' : c.modelName; b.classList.remove('empty'); }
-  else { b.textContent = '未配置'; b.classList.add('empty'); }
+  if (c && c.modelName) {
+    const label = isCliConfig(c) ? 'Pi CLI' : c.modelName;
+    b.textContent = label;
+    b.title = `当前模型：${label}`;
+    b.classList.remove('empty');
+  }
+  else {
+    b.textContent = '未配置';
+    b.title = '模型未配置';
+    b.classList.add('empty');
+  }
 }
 
 function getAgentModelName() {
@@ -750,6 +759,7 @@ function closeAgentModelMenu() {
 function toggleAgentModelMenu() {
   const picker = $('agentModelPicker');
   if (!picker || picker.classList.contains('hidden')) return;
+  if (!isAgentWorkspace()) return;
   const opening = !picker.classList.contains('open');
   document.querySelectorAll('.agent-model-picker.open').forEach(el => el.classList.remove('open'));
   if (opening) {
@@ -771,13 +781,15 @@ function updateAgentModelPicker() {
   const label = $('agentModelLabel');
   const trigger = $('agentModelTrigger');
   if (!picker || !label || !trigger) return;
-  const visible = isAgentWorkspace();
+  const visible = activeWorkspace === CHAT_SCOPE || isAgentWorkspace();
   picker.classList.toggle('hidden', !visible);
-  if (!visible) closeAgentModelMenu();
-  const model = getAgentModelName();
+  picker.classList.toggle('readonly', !isAgentWorkspace());
+  if (!visible || !isAgentWorkspace()) closeAgentModelMenu();
+  const chatModel = getConfig(CHAT_SCOPE)?.modelName || '未配置';
+  const model = isAgentWorkspace() ? getAgentModelName() : chatModel;
   label.textContent = model;
   trigger.disabled = isAgentWorkspace() && isActiveSessionStreaming(AGENT_SCOPE);
-  trigger.title = `Pi Agent 模型：${model}`;
+  trigger.title = isAgentWorkspace() ? `Pi Agent 模型：${model}` : `当前模型：${model}`;
   if (picker.classList.contains('open')) renderAgentModelMenu();
 }
 
@@ -1048,7 +1060,13 @@ function renderProjectControls() {
   const project = getActiveProject();
   const hasUsableProject = isProjectAvailable(project);
   if (isAgentWorkspace()) activeRunMode = 'task';
-  if ($('projectBadge')) $('projectBadge').textContent = isAgentWorkspace() ? (project?.name || '未选择项目') : '对话无需项目';
+  if ($('projectBadge')) {
+    const showProjectBadge = isAgentWorkspace();
+    const projectBadgeLabel = showProjectBadge ? (project?.name || '未选择项目') : '';
+    $('projectBadge').textContent = projectBadgeLabel;
+    $('projectBadge').title = showProjectBadge ? `当前项目：${projectBadgeLabel}` : '';
+    $('projectBadge').classList.toggle('hidden', !showProjectBadge);
+  }
   if ($('activeProjectHint')) $('activeProjectHint').textContent = isAgentWorkspace() && project ? project.path || project.name : '';
   if ($('projectSwitcher')) $('projectSwitcher').style.display = isAgentWorkspace() ? '' : 'none';
   if ($('btnNewSession')) $('btnNewSession').textContent = isAgentWorkspace() ? '+ 新建 Agent 会话' : '+ 新建对话';
