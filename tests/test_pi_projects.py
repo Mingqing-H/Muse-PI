@@ -90,6 +90,10 @@ class PiProjectTests(unittest.TestCase):
         self.assertEqual(result["project"]["name"], "new-project")
         self.assertEqual(result["project"]["path"], str(project_dir.resolve()))
 
+    def test_create_project_rejects_relative_path(self):
+        with self.assertRaisesRegex(ValueError, "绝对路径"):
+            server.create_pi_project("123")
+
     def test_create_existing_dialog_project_conflicts(self):
         project_dir = self.base / "workspace" / "duplicate"
         server.create_pi_project(project_dir)
@@ -170,7 +174,6 @@ class PiProjectTests(unittest.TestCase):
             with self.subTest(candidate=candidate):
                 with self.assertRaises(FileNotFoundError):
                     server.delete_pi_project_dir(session_dir=str(candidate))
-
 
 if __name__ == "__main__":
     unittest.main()

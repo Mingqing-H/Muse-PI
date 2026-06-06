@@ -441,42 +441,6 @@ body {
   min-width: 0;
 }
 
-.project-folder-picker {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 14px;
-  background: var(--surface-lift);
-  border: 1px solid var(--border-light);
-  border-radius: 2px;
-  color: var(--muted-light);
-  font-size: 12px;
-  font-family: var(--font-body);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.2s ease;
-}
-
-.project-folder-picker:hover {
-  background: var(--accent-glow);
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.project-folder-picker:active {
-  transform: scale(0.97);
-}
-
-.project-folder-picker:disabled,
-.project-folder-picker[data-state="loading"] {
-  opacity: 0.5;
-  pointer-events: none;
-}
-
-.project-folder-picker svg {
-  flex-shrink: 0;
-}
-
 .project-form-error {
   min-height: 18px;
   color: var(--rose);
@@ -2092,7 +2056,6 @@ body {
 .preset-btn,
 .btn,
 .btn-browse,
-.project-folder-picker,
 .confirm-actions button,
 .no-config button {
   border-radius: 999px;
@@ -2103,7 +2066,6 @@ body {
 .btn-secondary,
 .preset-btn,
 .btn-browse,
-.project-folder-picker,
 .confirm-actions .c-cancel,
 .no-config button {
   background: oklch(100% 0 0 / 0.08);
@@ -2128,7 +2090,6 @@ body {
 .btn:hover,
 .preset-btn:hover,
 .btn-browse:hover,
-.project-folder-picker:hover,
 .no-config button:hover {
   transform: translateY(-1px);
   border-color: oklch(90% 0.10 92 / 0.45);

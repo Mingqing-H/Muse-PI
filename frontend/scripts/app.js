@@ -802,6 +802,21 @@ function normalizeProjectFolderPath(path) {
   return normalized.replace(/\/+$/, '').toLowerCase();
 }
 
+function isAbsoluteLocalProjectPath(path) {
+  const value = (path || '').trim().replace(/^["']+|["']+$/g, '');
+  if (!value || /^[a-z][a-z0-9+.-]*:\/\//i.test(value)) return false;
+  if (/^[a-z]:[\\/]/i.test(value)) return true;
+  return /^\\\\[^\\/]+[\\/][^\\/]+/.test(value);
+}
+
+function projectPathValidationMessage(path) {
+  if (!(path || '').trim()) return '请填写本地文件夹路径';
+  if (!isAbsoluteLocalProjectPath(path)) {
+    return '项目路径必须是绝对路径，例如 C:\\Users\\you\\project，不能只填 123 或 .\\project。';
+  }
+  return '';
+}
+
 function projectPathKey(path) {
   return normalizeProjectFolderPath(path);
 }
@@ -883,6 +898,11 @@ async function setActiveProject(id) {
 
 async function saveProjectForm(values) {
   const path = (values.path || '').trim();
+  const validationMessage = projectPathValidationMessage(path);
+  if (validationMessage) {
+    showToast(validationMessage, 'var(--rose)');
+    return null;
+  }
   const conflict = findProjectPathConflict(path);
   if (conflict) {
     showProjectPathConflict(conflict);
@@ -901,37 +921,6 @@ async function saveProjectForm(values) {
   return result.project?.id || activeProjectIdCache;
 }
 
-function setProjectFolderInput(pathInput, folderPath) {
-  const nextPath = String(folderPath || '').trim();
-  if (!pathInput || !nextPath) return false;
-  pathInput.value = nextPath;
-  pathInput.defaultValue = nextPath;
-  pathInput.setAttribute('value', nextPath);
-  pathInput.dataset.pickedFolder = nextPath;
-  pathInput.dispatchEvent(new Event('input', { bubbles: true }));
-  pathInput.dispatchEvent(new Event('change', { bubbles: true }));
-  pathInput.focus({ preventScroll: true });
-  pathInput.setSelectionRange(nextPath.length, nextPath.length);
-  return true;
-}
-
-async function requestProjectFolderPath() {
-  const resp = await fetch('/api/pick-folder', {
-    method: 'GET',
-    cache: 'no-store',
-  });
-  const text = await resp.text();
-  let data = {};
-  try {
-    data = text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(text || '文件夹选择器返回了无效响应');
-  }
-  if (!resp.ok || data.error) throw new Error(data.error || text || `HTTP ${resp.status}`);
-  if (!data.ok || !data.path) return '';
-  return data.path;
-}
-
 function openProjectForm() {
   const formUid = `project-${Date.now().toString(36)}`;
   const pathInputId = `${formUid}-path`;
@@ -947,12 +936,6 @@ function openProjectForm() {
         <label for="${pathInputId}">本地文件夹路径</label>
         <div class="path-input-row">
           <input id="${pathInputId}" name="path" type="text" value="" placeholder="C:\\Users\\you\\project" spellcheck="false">
-          <button type="button" class="project-folder-picker" data-action="pick-project-folder" title="浏览文件夹" aria-label="浏览文件夹">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-            </svg>
-            <span>浏览</span>
-          </button>
         </div>
         <div class="project-form-error" data-role="project-path-error" aria-live="polite"></div>
       </div>
@@ -983,36 +966,14 @@ function openProjectForm() {
   overlay.querySelector('.modal-x').onclick = close;
   overlay.querySelector('.form-cancel').onclick = close;
   overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
-  const folderPicker = overlay.querySelector('[data-action="pick-project-folder"]');
-  folderPicker?.addEventListener('click', async event => {
-    event.preventDefault();
-    event.stopPropagation();
-    folderPicker.disabled = true;
-    folderPicker.dataset.state = 'loading';
-    try {
-      const folderPath = await requestProjectFolderPath();
-      if (!folderPath) {
-        showToast('已取消选择文件夹', 'var(--muted)');
-        return;
-      }
-      if (setProjectFolderInput(pathInput, folderPath)) {
-        setPathError('');
-        showToast(`已填入：${folderPath}`, 'var(--accent)');
-      }
-    } catch (error) {
-      console.error(error);
-      showToast('无法打开文件夹选择器', 'var(--rose)');
-    } finally {
-      folderPicker.disabled = false;
-      delete folderPicker.dataset.state;
-    }
-  });
   form.onsubmit = async event => {
     event.preventDefault();
     setPathError('');
     const path = pathInput.value.trim();
-    if (!path) {
-      showToast('请填写本地文件夹路径', 'var(--rose)');
+    const validationMessage = projectPathValidationMessage(path);
+    if (validationMessage) {
+      setPathError(validationMessage);
+      showToast(validationMessage, 'var(--rose)');
       pathInput.focus();
       return;
     }

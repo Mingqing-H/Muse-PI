@@ -31,7 +31,6 @@ No build step. Frontend is served as static files directly.
 - SQLite database at `data/llm_studio.sqlite` (schema version 6), tables: `app_meta`, `model_provider_configs`, `chat_sessions`, `chat_messages`
 - Pi CLI integration: spawns `pi --print` subprocess, streams stdout as NDJSON
 - Provider presets: MiMo, OpenAI, DeepSeek, Qwen, GLM, Kimi, SiliconFlow, Pi CLI
-- Windows-specific: native folder picker via COM/ctypes (`IFileDialog`)
 
 ### Frontend (`frontend/`) — Vanilla SPA (no framework)
 
@@ -58,7 +57,6 @@ No build step. Frontend is served as static files directly.
 | DELETE | `/api/pi-project` | Delete Pi project directory |
 | POST | `/api/cli/chat` | Streaming CLI chat (NDJSON) |
 | GET | `/api/project-image` | Serve images from project folders |
-| GET | `/api/pick-folder` | Windows native folder picker |
 
 ## Key Patterns
 
