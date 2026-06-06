@@ -2153,6 +2153,13 @@ function projectImageUrl(path, projectId) {
   return `/api/project-image?projectId=${encodeURIComponent(projectId || '')}&path=${encodeURIComponent(path)}`;
 }
 
+function loadDeferredProjectImages(gallery) {
+  gallery.querySelectorAll('img[data-src]').forEach(image => {
+    image.src = image.dataset.src;
+    image.removeAttribute('data-src');
+  });
+}
+
 function extractProjectImagePaths(content) {
   const seen = new Set();
   const paths = [];
@@ -2204,21 +2211,50 @@ function appendProjectImagePreviews(bubble, content, meta = {}) {
   const paths = extractProjectImagePaths(content).filter(path => !renderedPaths.has(path));
   if (!paths.length) return;
 
+  const panel = document.createElement('div');
+  panel.className = 'project-image-preview-panel';
+  const isExpanded = bubble.dataset.projectImagesExpanded === '1';
+  panel.classList.toggle('expanded', isExpanded);
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'project-image-toggle';
+  toggle.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+
+  const label = document.createElement('span');
+  label.className = 'project-image-toggle-label';
+  label.textContent = `识别到 ${paths.length} 张图片`;
+
+  const hint = document.createElement('span');
+  hint.className = 'project-image-toggle-hint';
+  hint.textContent = isExpanded ? '收起预览' : '展开预览';
+
+  const chevron = document.createElement('span');
+  chevron.className = 'project-image-toggle-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+
+  toggle.appendChild(label);
+  toggle.appendChild(hint);
+  toggle.appendChild(chevron);
+
   const gallery = document.createElement('div');
   gallery.className = 'project-image-gallery';
+  gallery.hidden = !isExpanded;
   paths.forEach(path => {
     const figure = document.createElement('figure');
     figure.className = 'project-image-card';
 
+    const imageUrl = projectImageUrl(path, meta.projectId);
     const image = document.createElement('img');
-    image.src = projectImageUrl(path, meta.projectId);
+    if (isExpanded) image.src = imageUrl;
+    else image.dataset.src = imageUrl;
     image.alt = path;
     image.loading = 'lazy';
     image.decoding = 'async';
     image.onerror = () => figure.classList.add('load-error');
 
     const link = document.createElement('a');
-    link.href = image.src;
+    link.href = imageUrl;
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
     link.appendChild(image);
@@ -2230,7 +2266,25 @@ function appendProjectImagePreviews(bubble, content, meta = {}) {
     figure.appendChild(caption);
     gallery.appendChild(figure);
   });
-  bubble.appendChild(gallery);
+
+  if (isExpanded) loadDeferredProjectImages(gallery);
+
+  toggle.addEventListener('click', () => {
+    const expanded = !panel.classList.contains('expanded');
+    panel.classList.toggle('expanded', expanded);
+    gallery.hidden = !expanded;
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    hint.textContent = expanded ? '收起预览' : '展开预览';
+    bubble.dataset.projectImagesExpanded = expanded ? '1' : '0';
+    if (expanded) {
+      loadDeferredProjectImages(gallery);
+      scrollToBottom();
+    }
+  });
+
+  panel.appendChild(toggle);
+  panel.appendChild(gallery);
+  bubble.appendChild(panel);
 }
 
 function setBubbleContent(bubble, role, content, renderRich = role !== 'user', renderMath = true, meta = {}) {
