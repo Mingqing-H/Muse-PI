@@ -3049,22 +3049,34 @@ body {
   position: relative;
   font-size: 20px;
   letter-spacing: 0.04em;
+  padding-left: 26px;
   pointer-events: auto;
 }
 
-.topbar .logo::before {
+.topbar .logo::before,
+.topbar .logo::after {
   content: '';
   position: absolute;
-  left: -20px;
-  top: 9px;
-  width: 10px;
-  height: 16px;
-  background:
-    radial-gradient(circle at 50% 16%, var(--fg-cream) 0 1.6px, transparent 2px),
-    radial-gradient(circle at 50% 84%, var(--fg-cream) 0 1.6px, transparent 2px),
-    linear-gradient(var(--fg-cream), var(--fg-cream)) 50% 50% / 1px 100% no-repeat,
-    linear-gradient(90deg, var(--fg-cream), var(--fg-cream)) 50% 50% / 100% 1px no-repeat;
-  opacity: 0.9;
+  clip-path: polygon(50% 0, 61% 38%, 100% 50%, 61% 62%, 50% 100%, 39% 62%, 0 50%, 39% 38%);
+}
+
+.topbar .logo::before {
+  left: 3px;
+  top: 5px;
+  width: 12px;
+  height: 12px;
+  background: oklch(88% 0.14 86);
+  filter: drop-shadow(0 0 5px oklch(88% 0.14 86 / 0.55));
+}
+
+.topbar .logo::after {
+  left: 14px;
+  top: 18px;
+  width: 6px;
+  height: 6px;
+  background: oklch(98% 0.02 220);
+  opacity: 0.96;
+  filter: drop-shadow(0 0 4px oklch(100% 0 0 / 0.45));
 }
 
 .tabs {
