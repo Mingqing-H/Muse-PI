@@ -2856,9 +2856,15 @@ function appendBubble(role, content, animate = true, meta = {}) {
 function scrollToBottom() { requestAnimationFrame(() => { messagesEl.scrollTop = messagesEl.scrollHeight; }); }
 
 inputEl.addEventListener('input', () => {
+  // IME ????? renderPills??? innerHTML ????????
+  if (!inputEl.isComposing) {
+    renderPills();
+  }
   updateReferencePicker();
-  renderPills();
 });
+
+inputEl.addEventListener('compositionstart', () => { inputEl.isComposing = true; });
+inputEl.addEventListener('compositionend', () => { inputEl.isComposing = false; });
 
 inputEl.addEventListener('keydown', e => {
   if (handleReferencePickerKeydown(e)) return;
