@@ -221,6 +221,102 @@ class PiProjectTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.resolve_project_image_path({"path": str(project_dir)}, "../outside.png")
 
+    def test_list_pi_skills_uses_project_settings_and_global_locations(self):
+        project_dir = self.base / "workspace" / "skill-project"
+        project_dir.mkdir(parents=True)
+        pi_agent_dir = self.base / ".pi" / "agent"
+        pi_agent_dir.mkdir(parents=True)
+
+        project_skill = project_dir / ".pi" / "skills" / "review"
+        project_skill.mkdir(parents=True)
+        (project_skill / "SKILL.md").write_text(
+            "---\nname: review\ndescription: Review current code\n---\n",
+            encoding="utf-8",
+        )
+        global_skill = pi_agent_dir / "skills" / "global-tool"
+        global_skill.mkdir(parents=True)
+        (global_skill / "SKILL.md").write_text(
+            "---\nname: global-tool\ndescription: Global skill\n---\n",
+            encoding="utf-8",
+        )
+        configured_dir = self.base / "configured-skills"
+        configured_dir.mkdir()
+        (configured_dir / "note.md").write_text(
+            "---\nname: note-skill\ndescription: Root markdown skill\n---\n",
+            encoding="utf-8",
+        )
+        claude_skill = self.base / ".claude" / "skills" / "writer"
+        claude_skill.mkdir(parents=True)
+        (claude_skill / "SKILL.md").write_text(
+            "---\nname: claude-writer\ndescription: Skill from configured Claude path\n---\n",
+            encoding="utf-8",
+        )
+        agents_skill = self.base / ".agents" / "skills" / "planner"
+        agents_skill.mkdir(parents=True)
+        (agents_skill / "SKILL.md").write_text(
+            "---\nname: agents-planner\ndescription: Skill from ~/.agents\n---\n",
+            encoding="utf-8",
+        )
+        agent_skill = self.base / ".agent" / "skills" / "legacy"
+        agent_skill.mkdir(parents=True)
+        (agent_skill / "SKILL.md").write_text(
+            "---\nname: legacy-agent\ndescription: Skill from ~/.agent\n---\n",
+            encoding="utf-8",
+        )
+        (pi_agent_dir / "settings.json").write_text(
+            json.dumps({"skills": [str(configured_dir), "~/.claude/skills"]}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"PI_CODING_AGENT_DIR": str(pi_agent_dir)}), patch.object(server.Path, "home", return_value=self.base):
+            skills = server.list_pi_skills({"path": str(project_dir)})
+
+        names = {skill["name"] for skill in skills}
+        self.assertIn("review", names)
+        self.assertIn("global-tool", names)
+        self.assertIn("note-skill", names)
+        self.assertIn("claude-writer", names)
+        self.assertIn("agents-planner", names)
+        self.assertIn("legacy-agent", names)
+
+    def test_list_pi_skills_reads_default_settings_when_agent_dir_is_overridden(self):
+        project_dir = self.base / "workspace" / "skill-project"
+        project_dir.mkdir(parents=True)
+        custom_agent_dir = self.base / "custom-pi-agent"
+        custom_agent_dir.mkdir()
+
+        default_pi_agent_dir = self.base / ".pi" / "agent"
+        default_pi_agent_dir.mkdir(parents=True)
+        claude_skill = self.base / ".claude" / "skills" / "research"
+        claude_skill.mkdir(parents=True)
+        (claude_skill / "SKILL.md").write_text(
+            "---\nname: claude-research\ndescription: Skill from default settings\n---\n",
+            encoding="utf-8",
+        )
+        (default_pi_agent_dir / "settings.json").write_text(
+            json.dumps({"skills": ["~/.claude/skills"]}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"PI_CODING_AGENT_DIR": str(custom_agent_dir)}), patch.object(server.Path, "home", return_value=self.base):
+            skills = server.list_pi_skills({"path": str(project_dir)})
+
+        self.assertIn("claude-research", {skill["name"] for skill in skills})
+
+    def test_list_project_files_returns_filtered_relative_files(self):
+        project_dir = self.base / "workspace" / "file-project"
+        project_dir.mkdir(parents=True)
+        (project_dir / "frontend").mkdir()
+        (project_dir / "frontend" / "app.js").write_text("console.log('ok')", encoding="utf-8")
+        (project_dir / "README.md").write_text("readme", encoding="utf-8")
+        (project_dir / ".git").mkdir()
+        (project_dir / ".git" / "config").write_text("ignored", encoding="utf-8")
+
+        files = server.list_project_files({"path": str(project_dir)}, query="app")
+
+        self.assertEqual(files[0]["path"], "frontend/app.js")
+        self.assertNotIn(".git/config", {file["path"] for file in files})
+
     def test_delete_rejects_root_nested_and_outside_paths(self):
         self.session_root.mkdir(parents=True)
         nested = self.session_root / "project" / "nested"

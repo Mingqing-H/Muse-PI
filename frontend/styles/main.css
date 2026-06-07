@@ -3417,6 +3417,161 @@ body {
   padding: 10px 15px;
 }
 
+.reference-picker {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% - 4px);
+  z-index: 30;
+  width: min(620px, calc(100% - 28px));
+  max-height: min(46vh, 420px);
+  overflow: hidden;
+  transform: translateX(-50%);
+  border: 1px solid oklch(90% 0.10 88 / 0.24);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, oklch(10% 0.03 220 / 0.92), oklch(17% 0.04 160 / 0.88)),
+    oklch(8% 0.02 220 / 0.92);
+  box-shadow:
+    0 22px 60px oklch(0% 0 0 / 0.34),
+    inset 0 1px 0 oklch(100% 0 0 / 0.12);
+  backdrop-filter: blur(22px) saturate(138%);
+  -webkit-backdrop-filter: blur(22px) saturate(138%);
+  animation: referencePickerIn 0.22s var(--ease-out-expo);
+}
+
+.reference-picker.hidden {
+  display: none;
+}
+
+@keyframes referencePickerIn {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.reference-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  height: 40px;
+  padding: 0 14px 0 16px;
+  border-bottom: 1px solid oklch(100% 0 0 / 0.10);
+  color: oklch(96% 0.05 88 / 0.94);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.reference-picker-head small {
+  min-width: 0;
+  max-width: 56%;
+  overflow: hidden;
+  color: oklch(88% 0.10 84 / 0.78);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.reference-picker-list {
+  max-height: calc(min(46vh, 420px) - 40px);
+  overflow-y: auto;
+  padding: 7px;
+}
+
+.reference-picker-list::-webkit-scrollbar {
+  width: 4px;
+}
+
+.reference-picker-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: oklch(88% 0.10 84 / 0.32);
+}
+
+.reference-option {
+  width: 100%;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--fg-cream);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.18s var(--ease-out-expo);
+}
+
+.reference-option:hover,
+.reference-option.active {
+  border-color: oklch(90% 0.10 88 / 0.28);
+  background: oklch(100% 0 0 / 0.08);
+  transform: translateY(-1px);
+}
+
+.reference-option-mark {
+  width: 38px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 12px;
+  background: linear-gradient(135deg, oklch(90% 0.12 86 / 0.24), oklch(70% 0.13 145 / 0.16));
+  color: oklch(96% 0.07 86);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-option-copy {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.reference-option-copy strong,
+.reference-option-copy small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reference-option-copy strong {
+  color: oklch(97% 0.03 92 / 0.96);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.reference-option-copy small {
+  color: oklch(88% 0.04 90 / 0.62);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.reference-picker-empty {
+  padding: 18px 16px;
+  color: oklch(88% 0.04 90 / 0.62);
+  font-size: 12px;
+  text-align: center;
+}
+
 .send-btn {
   width: 74px;
   height: 42px;

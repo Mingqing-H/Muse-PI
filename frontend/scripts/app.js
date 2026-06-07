@@ -37,6 +37,18 @@ let piModelOptionsCache = null;
 let piModelOptionsError = '';
 let agentModelSearchValue = '';
 let enabledModelDraft = [];
+let skillOptionsCache = null;
+let skillOptionsProjectId = null;
+const fileOptionsCache = {};
+const referencePickerState = {
+  open: false,
+  type: '',
+  query: '',
+  tokenStart: 0,
+  tokenEnd: 0,
+  activeIndex: 0,
+  items: [],
+};
 const syncedPiProjects = new Set();
 const streamingByScope = { [CHAT_SCOPE]: false, [AGENT_SCOPE]: false };
 const inFlightByScope = { [CHAT_SCOPE]: {}, [AGENT_SCOPE]: {} };
@@ -1062,6 +1074,10 @@ async function setActiveProject(id) {
     return;
   }
   activeProjectIdCache = id;
+  skillOptionsCache = null;
+  skillOptionsProjectId = null;
+  delete fileOptionsCache[referenceCacheKey(id)];
+  closeReferencePicker();
   persistActiveProject();
   if (isAgentWorkspace()) {
     try {
@@ -1835,6 +1851,7 @@ const chatLayoutEl = document.querySelector('.chat-layout');
 const sidebarToggle = $('sidebarToggle');
 const agentModelTrigger = $('agentModelTrigger');
 const agentModelPicker = $('agentModelPicker');
+const referencePickerEl = $('referencePicker');
 
 if (agentModelTrigger) {
   agentModelTrigger.onclick = event => {
@@ -1848,6 +1865,218 @@ if (agentModelPicker) {
 }
 
 document.addEventListener('click', closeAgentModelMenu);
+
+function referenceCacheKey(projectId = getActiveProjectId()) {
+  return projectId || 'default';
+}
+
+async function loadSkillOptions(force = false) {
+  const projectId = getActiveProjectId();
+  if (!USE_DATABASE) return [];
+  if (!force && skillOptionsCache && skillOptionsProjectId === projectId) return skillOptionsCache;
+  const params = projectId ? `?projectId=${encodeURIComponent(projectId)}` : '';
+  const data = await apiRequest(`/api/pi-skills${params}`);
+  skillOptionsProjectId = projectId;
+  skillOptionsCache = data.skills || [];
+  return skillOptionsCache;
+}
+
+async function loadFileOptions(force = false) {
+  const projectId = getActiveProjectId();
+  if (!USE_DATABASE || !isProjectAvailable(getActiveProject())) return [];
+  const key = referenceCacheKey(projectId);
+  if (!force && fileOptionsCache[key]) return fileOptionsCache[key];
+  const params = new URLSearchParams({ projectId: projectId || '', limit: '600' });
+  const data = await apiRequest(`/api/project-files?${params.toString()}`);
+  fileOptionsCache[key] = data.files || [];
+  return fileOptionsCache[key];
+}
+
+function getReferenceTrigger() {
+  if (!isAgentWorkspace() || !inputEl) return null;
+  const caret = inputEl.selectionStart ?? inputEl.value.length;
+  if ((inputEl.selectionEnd ?? caret) !== caret) return null;
+  const before = inputEl.value.slice(0, caret);
+  const match = before.match(/(^|[\s([{])([/@]\S*)$/);
+  if (!match) return null;
+  return {
+    type: match[2][0] === '/' ? 'skill' : 'file',
+    query: match[2].slice(1),
+    tokenStart: caret - match[2].length,
+    tokenEnd: caret,
+  };
+}
+
+function filterReferenceItems(type, query, options) {
+  let normalized = (query || '').trim().toLowerCase();
+  const items = [];
+  if (type === 'skill') {
+    if (['skill', 'skills', '技能'].includes(normalized)) normalized = '';
+    options.forEach(skill => {
+      const name = skill.name || '';
+      const haystack = `${name} ${skill.description || ''} ${skill.source || ''} ${skill.path || ''}`.toLowerCase();
+      if (normalized && !haystack.includes(normalized)) return;
+      items.push({
+        type,
+        title: name,
+        subtitle: skill.description || skill.source || skill.path || '',
+        meta: skill.source || '',
+        insertText: `/${name} `,
+        badge: `/${name}`,
+      });
+    });
+    return items.slice(0, 12);
+  }
+
+  options.forEach(file => {
+    const path = file.path || '';
+    const name = file.name || path;
+    const haystack = `${path} ${name}`.toLowerCase();
+    if (normalized && !haystack.includes(normalized)) return;
+    const quotedPath = /\s/.test(path) ? `"${path}"` : path;
+    items.push({
+      type,
+      title: name,
+      subtitle: path,
+      meta: file.directory || file.extension || '',
+      insertText: `@${quotedPath} `,
+      badge: '@',
+    });
+  });
+  return items.slice(0, 14);
+}
+
+function closeReferencePicker() {
+  referencePickerState.open = false;
+  referencePickerState.items = [];
+  if (referencePickerEl) {
+    referencePickerEl.classList.add('hidden');
+    referencePickerEl.innerHTML = '';
+  }
+}
+
+function renderReferencePicker(status = '') {
+  if (!referencePickerEl) return;
+  const type = referencePickerState.type;
+  const title = type === 'skill' ? 'Skills' : 'Files';
+  const lead = type === 'skill' ? '/' : '@';
+  const items = referencePickerState.items || [];
+  referencePickerEl.classList.remove('hidden');
+  referencePickerEl.innerHTML = `
+    <div class="reference-picker-head">
+      <span>${title}</span>
+      <small>${escapeHtml(referencePickerState.query ? `${lead}${referencePickerState.query}` : lead)}</small>
+    </div>
+    <div class="reference-picker-list">
+      ${status ? `<div class="reference-picker-empty">${escapeHtml(status)}</div>` : ''}
+      ${items.map((item, index) => `
+        <button class="reference-option${index === referencePickerState.activeIndex ? ' active' : ''}" data-index="${index}" type="button" role="option" aria-selected="${index === referencePickerState.activeIndex ? 'true' : 'false'}">
+          <span class="reference-option-mark">${escapeHtml(item.badge || lead)}</span>
+          <span class="reference-option-copy">
+            <strong>${escapeHtml(item.title)}</strong>
+            <small>${escapeHtml(item.subtitle || item.meta || '')}</small>
+          </span>
+        </button>
+      `).join('')}
+      ${!status && items.length === 0 ? '<div class="reference-picker-empty">没有匹配项</div>' : ''}
+    </div>
+  `;
+  referencePickerEl.querySelectorAll('.reference-option').forEach(button => {
+    button.onmouseenter = () => {
+      referencePickerState.activeIndex = Number(button.dataset.index || 0);
+      renderReferencePicker();
+    };
+    button.onmousedown = event => {
+      event.preventDefault();
+      const item = referencePickerState.items[Number(button.dataset.index || 0)];
+      if (item) insertReferenceItem(item);
+    };
+  });
+}
+
+async function updateReferencePicker({ force = false } = {}) {
+  const trigger = getReferenceTrigger();
+  if (!trigger) {
+    closeReferencePicker();
+    return;
+  }
+
+  referencePickerState.open = true;
+  referencePickerState.type = trigger.type;
+  referencePickerState.query = trigger.query;
+  referencePickerState.tokenStart = trigger.tokenStart;
+  referencePickerState.tokenEnd = trigger.tokenEnd;
+  if (!force) referencePickerState.activeIndex = 0;
+  renderReferencePicker('正在读取...');
+
+  try {
+    const options = trigger.type === 'skill'
+      ? await loadSkillOptions()
+      : await loadFileOptions();
+    const latest = getReferenceTrigger();
+    if (!latest || latest.type !== trigger.type || latest.tokenStart !== trigger.tokenStart) return;
+    referencePickerState.query = latest.query;
+    referencePickerState.tokenEnd = latest.tokenEnd;
+    referencePickerState.items = filterReferenceItems(trigger.type, latest.query, options);
+    referencePickerState.activeIndex = Math.min(referencePickerState.activeIndex, Math.max(0, referencePickerState.items.length - 1));
+    renderReferencePicker();
+  } catch (error) {
+    console.error(error);
+    referencePickerState.items = [];
+    renderReferencePicker(trigger.type === 'skill' ? '技能读取失败' : '文件读取失败');
+  }
+}
+
+function insertReferenceItem(item) {
+  const start = referencePickerState.tokenStart;
+  const end = inputEl.selectionStart ?? referencePickerState.tokenEnd;
+  const value = inputEl.value;
+  inputEl.value = `${value.slice(0, start)}${item.insertText}${value.slice(end)}`;
+  const caret = start + item.insertText.length;
+  inputEl.setSelectionRange(caret, caret);
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+  closeReferencePicker();
+  inputEl.focus();
+}
+
+function handleReferencePickerKeydown(event) {
+  if (!referencePickerState.open || !referencePickerEl || referencePickerEl.classList.contains('hidden')) return false;
+  const items = referencePickerState.items || [];
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeReferencePicker();
+    return true;
+  }
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    if (!items.length) return true;
+    const delta = event.key === 'ArrowDown' ? 1 : -1;
+    referencePickerState.activeIndex = (referencePickerState.activeIndex + delta + items.length) % items.length;
+    renderReferencePicker();
+    return true;
+  }
+  if ((event.key === 'Enter' || event.key === 'Tab') && items.length) {
+    event.preventDefault();
+    insertReferenceItem(items[referencePickerState.activeIndex] || items[0]);
+    return true;
+  }
+  if (event.key === 'Enter' || event.key === 'Tab') {
+    event.preventDefault();
+    return true;
+  }
+  return false;
+}
+
+function isSkillListRequest(text) {
+  return /^\/(?:skills?|技能)?$/i.test((text || '').trim());
+}
+
+if (referencePickerEl) {
+  referencePickerEl.addEventListener('click', event => event.stopPropagation());
+}
+
+document.addEventListener('click', closeReferencePicker);
 
 function setSidebarCollapsed(collapsed, persist = true) {
   if (!chatLayoutEl || !sidebarToggle) return;
@@ -2530,11 +2759,16 @@ function scrollToBottom() { requestAnimationFrame(() => { messagesEl.scrollTop =
 inputEl.addEventListener('input', () => {
   inputEl.style.height = 'auto';
   inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+  updateReferencePicker();
 });
 
 inputEl.addEventListener('keydown', e => {
+  if (handleReferencePickerKeydown(e)) return;
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
+
+inputEl.addEventListener('click', () => updateReferencePicker({ force: true }));
+inputEl.addEventListener('blur', () => setTimeout(closeReferencePicker, 120));
 
 sendBtn.addEventListener('click', () => { if (isActiveSessionStreaming()) stopStreaming(activeWorkspace, getActiveId()); else sendMessage(); });
 updateSendButtonState();
@@ -2715,6 +2949,12 @@ async function sendMessage() {
   const requestWorkspace = activeWorkspace;
   const requestIsAgent = requestWorkspace === AGENT_SCOPE;
   if (!text) return;
+  if (requestIsAgent && isSkillListRequest(text)) {
+    inputEl.focus();
+    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+    await updateReferencePicker({ force: true });
+    return;
+  }
   if (isActiveSessionStreaming(requestWorkspace)) return;
 
   const cfg = getConfig(requestWorkspace);
@@ -2926,6 +3166,7 @@ function isRippleEligibleTarget(target) {
     '.project-card',
     '.project-empty',
     '.custom-select',
+    '.reference-picker',
     '.modal-overlay',
     '.confirm-overlay',
     '.toast'

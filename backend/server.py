@@ -27,6 +27,22 @@ PORT = 8765
 
 SCHEMA_VERSION = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+PROJECT_FILE_IGNORE_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+}
+PROJECT_FILE_IGNORE_FILES = {".DS_Store", "Thumbs.db"}
+DEFAULT_PROJECT_FILE_LIMIT = 400
 
 PRESET_URLS = {
     "MiMo": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
@@ -792,12 +808,21 @@ def load_custom_pi_models():
     return models
 
 
-def load_enabled_pi_models():
-    settings_path = Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent")) / "settings.json"
+def pi_agent_dir():
+    return Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent")).expanduser()
+
+
+def load_pi_settings():
+    settings_path = pi_agent_dir() / "settings.json"
     try:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return []
+        return {}, settings_path
+    return settings if isinstance(settings, dict) else {}, settings_path
+
+
+def load_enabled_pi_models():
+    settings, _settings_path = load_pi_settings()
 
     enabled_models = settings.get("enabledModels") if isinstance(settings, dict) else None
     if not isinstance(enabled_models, list):
@@ -849,6 +874,166 @@ def list_pi_models(command=""):
         "raw": raw_output,
         "args": args,
     }
+
+
+def parse_skill_frontmatter(skill_path):
+    try:
+        text = Path(skill_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+
+    frontmatter = {}
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            for line in text[3:end].splitlines():
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                frontmatter[key.strip()] = value.strip().strip("\"'")
+
+    path = Path(skill_path)
+    fallback_name = path.parent.name if path.name.upper() == "SKILL.MD" else path.stem
+    return {
+        "name": frontmatter.get("name") or fallback_name,
+        "description": frontmatter.get("description") or "",
+    }
+
+
+def make_skill_record(skill_path, source, root=None):
+    path = Path(skill_path)
+    meta = parse_skill_frontmatter(path)
+    name = re.sub(r"\s+", "-", str(meta["name"]).strip())
+    if not name:
+        return None
+    record = {
+        "name": name,
+        "command": f"/{name}",
+        "description": meta["description"],
+        "path": str(path),
+        "source": source,
+        "directory": str(path.parent),
+    }
+    if root:
+        try:
+            record["relativePath"] = str(path.relative_to(root))
+        except ValueError:
+            record["relativePath"] = path.name
+    return record
+
+
+def should_skip_skill_dir(path):
+    name = Path(path).name
+    return name in PROJECT_FILE_IGNORE_DIRS
+
+
+def discover_skills_in_path(path, source, include_root_markdown=False):
+    root = Path(path).expanduser()
+    if root.is_file() and root.suffix.lower() == ".md":
+        record = make_skill_record(root, source, root.parent)
+        return [record] if record else []
+    if not root.is_dir():
+        return []
+
+    records = []
+    if include_root_markdown:
+        try:
+            for item in sorted(root.glob("*.md"), key=lambda candidate: candidate.name.lower()):
+                record = make_skill_record(item, source, root)
+                if record:
+                    records.append(record)
+        except OSError:
+            pass
+
+    for current, dirs, files in os.walk(root, followlinks=True):
+        dirs[:] = sorted(
+            [directory for directory in dirs if not should_skip_skill_dir(directory)],
+            key=str.lower,
+        )
+        if "SKILL.md" not in files:
+            continue
+        skill_path = Path(current) / "SKILL.md"
+        record = make_skill_record(skill_path, source, root)
+        if record:
+            records.append(record)
+    return records
+
+
+def git_root_for_path(path):
+    current = Path(path).resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def project_skill_roots(project):
+    try:
+        cwd = Path(resolve_project_cwd(project)).resolve()
+    except ValueError:
+        return []
+
+    git_root = git_root_for_path(cwd)
+    roots = []
+    for folder in (cwd, *cwd.parents):
+        roots.append((folder / ".pi" / "skills", "project .pi/skills", True))
+        roots.append((folder / ".agents" / "skills", "project .agents/skills", False))
+        if git_root and folder == git_root:
+            break
+        if not git_root and folder.parent == folder:
+            break
+    return roots
+
+
+def configured_skill_roots():
+    settings, settings_path = load_pi_settings()
+    entries = settings.get("skills")
+    if not isinstance(entries, list):
+        return []
+
+    roots = []
+    for entry in entries:
+        raw = os.path.expandvars(str(entry or "").strip().strip("\"'"))
+        if not raw:
+            continue
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = (settings_path.parent / candidate).resolve(strict=False)
+        roots.append((candidate, "settings.json skills", True))
+    return roots
+
+
+def global_skill_roots():
+    home = Path.home()
+    return [
+        (pi_agent_dir() / "skills", "~/.pi/agent/skills", True),
+        (home / ".agents" / "skills", "~/.agents/skills", False),
+        (home / ".agent" / "skills", "~/.agent/skills", False),
+    ]
+
+
+def list_pi_skills(project=None):
+    roots = [
+        *project_skill_roots(project or {}),
+        *configured_skill_roots(),
+        *global_skill_roots(),
+    ]
+
+    skills = []
+    seen_names = set()
+    seen_paths = set()
+    for root, source, include_root_markdown in roots:
+        for record in discover_skills_in_path(root, source, include_root_markdown):
+            path_key = record["path"].lower()
+            name_key = record["name"].lower()
+            if path_key in seen_paths or name_key in seen_names:
+                continue
+            seen_paths.add(path_key)
+            seen_names.add(name_key)
+            skills.append(record)
+
+    skills.sort(key=lambda item: (item["name"].lower(), item["source"].lower()))
+    return skills
 
 
 def pi_session_root():
@@ -1252,6 +1437,71 @@ def resolve_project_cwd(project):
     return str(Path((project or {}).get("path")).expanduser())
 
 
+def file_match_score(relative_path, query):
+    if not query:
+        return 0
+    haystack = relative_path.lower()
+    needle = query.lower().replace("\\", "/").lstrip("@")
+    name = Path(relative_path).name.lower()
+    if name.startswith(needle):
+        return 0
+    if haystack.startswith(needle):
+        return 1
+    if needle in name:
+        return 2
+    if needle in haystack:
+        return 3
+    return 99
+
+
+def list_project_files(project, query="", limit=DEFAULT_PROJECT_FILE_LIMIT):
+    root = Path(resolve_project_cwd(project)).resolve()
+    query = str(query or "").strip().lstrip("@")
+    try:
+        limit = max(1, min(int(limit or DEFAULT_PROJECT_FILE_LIMIT), 1000))
+    except (TypeError, ValueError):
+        limit = DEFAULT_PROJECT_FILE_LIMIT
+
+    matches = []
+    for current, dirs, files in os.walk(root, followlinks=True):
+        dirs[:] = sorted(
+            [directory for directory in dirs if directory not in PROJECT_FILE_IGNORE_DIRS],
+            key=str.lower,
+        )
+        current_path = Path(current)
+        rel_dir = current_path.relative_to(root).as_posix()
+        if rel_dir == ".":
+            rel_dir = ""
+        for file_name in sorted(files, key=str.lower):
+            if file_name in PROJECT_FILE_IGNORE_FILES:
+                continue
+            path = current_path / file_name
+            try:
+                stat = path.stat()
+                relative_path = path.relative_to(root).as_posix()
+            except (OSError, ValueError):
+                continue
+            score = file_match_score(relative_path, query)
+            if score >= 99:
+                continue
+            matches.append(
+                {
+                    "name": file_name,
+                    "path": relative_path,
+                    "directory": rel_dir,
+                    "extension": path.suffix.lower().lstrip("."),
+                    "size": stat.st_size,
+                    "updated": int(stat.st_mtime * 1000),
+                    "_score": score,
+                }
+            )
+
+    matches.sort(key=lambda item: (item["_score"], item["path"].lower()))
+    for item in matches:
+        item.pop("_score", None)
+    return matches[:limit]
+
+
 def resolve_common_local_image_path(image_path):
     if image_path.is_absolute() or image_path.drive:
         return None
@@ -1496,6 +1746,27 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
 
         if parsed_path == "/api/pi-projects":
             self.send_json({"projects": list_pi_session_projects()})
+            return
+
+        if parsed_path == "/api/pi-skills":
+            params = parse_qs(urlparse(self.path).query)
+            project_id = (params.get("projectId") or [""])[0]
+            with db_connection() as conn:
+                project = load_projects(conn).get(project_id) or active_project(conn)
+            self.send_json({"skills": list_pi_skills(project)})
+            return
+
+        if parsed_path == "/api/project-files":
+            params = parse_qs(urlparse(self.path).query)
+            project_id = (params.get("projectId") or [""])[0]
+            query = (params.get("q") or [""])[0]
+            limit = (params.get("limit") or [DEFAULT_PROJECT_FILE_LIMIT])[0]
+            try:
+                with db_connection() as conn:
+                    project = load_projects(conn).get(project_id) or active_project(conn)
+                self.send_json({"files": list_project_files(project, query, limit)})
+            except (OSError, ValueError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
             return
 
         if self.path == "/api/state":
