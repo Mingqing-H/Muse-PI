@@ -1517,11 +1517,31 @@ def resolve_common_local_image_path(image_path):
     return None
 
 
+def search_project_image(root, filename):
+    """Search the project directory recursively for an image file by filename (case-insensitive).
+
+    Returns the Path of the first match, or None if not found.
+    """
+    target = filename.lower()
+    for current, dirs, files in os.walk(root, followlinks=True):
+        dirs[:] = sorted(
+            [d for d in dirs if d not in PROJECT_FILE_IGNORE_DIRS],
+            key=str.lower,
+        )
+        for file_name in files:
+            if file_name.lower() == target:
+                return Path(current) / file_name
+    return None
+
+
+
+
 def resolve_project_image_path(project, image_path):
     raw_path = (image_path or "").strip().strip("\"'`")
     if raw_path.startswith("<") and raw_path.endswith(">"):
         raw_path = raw_path[1:-1].strip()
     raw_path = re.sub(r"^([A-Za-z]):\s+([\\/])", r"\1:\2", raw_path)
+    raw_path = re.sub(r"^([A-Za-z])：", r"\1:", raw_path)  # normalize full-width colon C： -> C:
     if not raw_path:
         raise ValueError("图片路径为空。")
 
@@ -1543,6 +1563,11 @@ def resolve_project_image_path(project, image_path):
         fallback = resolve_common_local_image_path(candidate_input)
         if fallback:
             candidate = fallback
+
+    if not candidate.exists() or not candidate.is_file():
+        searched = search_project_image(root, candidate_input.name)
+        if searched:
+            candidate = searched
 
     if not candidate.exists() or not candidate.is_file():
         raise FileNotFoundError("图片不存在。")

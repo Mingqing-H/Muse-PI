@@ -2580,6 +2580,7 @@ function normalizeProjectImagePath(value) {
   const imageTarget = path.match(new RegExp(`^([\\s\\S]*?\\.(${IMAGE_EXT_PATTERN}))(?:\\s+["'][\\s\\S]*["'])?$`, 'i'));
   if (imageTarget) path = imageTarget[1].trim();
   path = path.replace(/^([a-z]):(?:\s+|%20)+([\\/])/i, '$1:$2');
+  path = path.replace(/^([a-z])：/i, '$1:');  // normalize full-width colon C： -> C:
   path = path.replace(/^[*`"'“”‘’（(【\[]+|[*`"'“”‘’。.,，、；;：:！!？?）)】\]]+$/g, '');
   path = path.replace(/^[<([{]+|[>\])}.,;!?]+$/g, '');
   path = path.split(/[?#]/)[0].replace(/\\/g, '/').trim();
