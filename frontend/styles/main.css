@@ -888,10 +888,11 @@ body {
   letter-spacing: 0.08em;
 }
 
-.project-select-row {
-  display: flex;
-  gap: 8px;
-}
+ .project-select-row {
+   display: flex;
+   gap: 8px;
+   min-width: 0;
+ }
 
 .project-select-row .custom-select {
   min-width: 0;
@@ -950,16 +951,17 @@ body {
 .project-select-row .custom-select-dropdown::-webkit-scrollbar { width: 3px; }
 .project-select-row .custom-select-dropdown::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 1px; }
 
-.project-select-row .custom-select-option {
-  padding: 9px 12px;
-  font-size: 12px;
-  color: var(--fg-cream);
-  cursor: pointer;
-  transition: background 0.2s;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
+ .project-select-row .custom-select-option {
+   padding: 9px 12px;
+   font-size: 12px;
+   color: var(--fg-cream);
+   cursor: pointer;
+   transition: background 0.2s;
+   display: flex;
+   align-items: center;
+   gap: 8px;
+   word-break: break-word;
+ }
 
 .project-select-row .custom-select-option:hover {
   background: var(--surface-lift);
