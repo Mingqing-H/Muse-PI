@@ -435,7 +435,7 @@ function syncProviderFields(activeIndex) {
   const isCli = preset?.kind === 'cli';
   if ($('apiUrlLabel')) $('apiUrlLabel').innerHTML = isCli ? 'Pi CLI 本地路径 <span class="hint">&mdash; 留空自动识别 pi</span>' : 'API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span>';
   if ($('apiKeyLabel')) $('apiKeyLabel').textContent = 'API Key';
-  if ($('modelNameLabel')) $('modelNameLabel').textContent = isCli ? '显示名称' : '启用模型';
+  if ($('modelNameLabel')) $('modelNameLabel').style.display = isCli ? 'none' : '';
   if ($('apiUrl')) $('apiUrl').placeholder = isCli ? '留空自动识别，或填写 D:\\npm-global\\pi.cmd' : 'https://api.openai.com/v1/chat/completions';
   if ($('apiKey')) $('apiKey').placeholder = 'sk-...';
   if ($('modelName')) $('modelName').placeholder = isCli ? 'default' : 'gpt-4o';
