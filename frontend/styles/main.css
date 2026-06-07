@@ -3845,6 +3845,17 @@ body {
   word-wrap: break-word;
   white-space: pre-wrap;
 }
+#input::-webkit-scrollbar {
+  width: 4px;
+}
+#input::-webkit-scrollbar-track {
+  background: transparent;
+}
+#input::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 2px;
+}
+
 #input:empty::before {
   content: attr(data-placeholder);
   color: var(--muted);

@@ -2134,8 +2134,6 @@ function insertReferenceItem(item) {
   setInputText(value.slice(0, start) + item.insertText + value.slice(end));
   const caret = start + item.insertText.length;
   setCaret(start + item.insertText.length);
-  inputEl.style.height = 'auto';
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
   closeReferencePicker();
   inputEl.focus();
 }
@@ -2857,8 +2855,6 @@ function appendBubble(role, content, animate = true, meta = {}) {
 function scrollToBottom() { requestAnimationFrame(() => { messagesEl.scrollTop = messagesEl.scrollHeight; }); }
 
 inputEl.addEventListener('input', () => {
-  inputEl.style.height = 'auto';
-  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
   updateReferencePicker();
   renderPills();
 });
