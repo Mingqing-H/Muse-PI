@@ -1911,39 +1911,64 @@ function filterReferenceItems(type, query, options) {
   let normalized = (query || '').trim().toLowerCase();
   const items = [];
   if (type === 'skill') {
-    if (['skill', 'skills', '技能'].includes(normalized)) normalized = '';
-    options.forEach(skill => {
-      const name = skill.name || '';
-      const haystack = `${name} ${skill.description || ''} ${skill.source || ''} ${skill.path || ''}`.toLowerCase();
-      if (normalized && !haystack.includes(normalized)) return;
-      items.push({
-        type,
-        title: name,
-        subtitle: skill.description || skill.source || skill.path || '',
-        meta: skill.source || '',
-        insertText: `/${name} `,
-        badge: "/",
-      });
-    });
-    return items.slice(0, 50);
+   if (['skill', 'skills', '技能'].includes(normalized)) normalized = '';
+   options.forEach(skill => {
+     const name = skill.name || '';
+     const haystack = `${name} ${skill.description || ''} ${skill.source || ''} ${skill.path || ''}`.toLowerCase();
+     if (normalized && !haystack.includes(normalized)) return;
+      // Compute priority: name-start > name-contain > other-fields
+      let priority = 0;
+      if (normalized) {
+        const lowerName = name.toLowerCase();
+        if (!lowerName.includes(normalized)) {
+          // Name doesn't match, only other fields matched → lower priority
+          priority = 2;
+        } else if (!lowerName.startsWith(normalized)) {
+          priority = 1;
+        }
+      }
+     items.push({
+       type,
+       title: name,
+       subtitle: skill.description || skill.source || skill.path || '',
+       meta: skill.source || '',
+       insertText: `/${name} `,
+       badge: "/",
+        _priority: priority,
+     });
+   });
+    if (normalized) items.sort((a, b) => a._priority - b._priority);
+   return items.slice(0, 50);
   }
 
   options.forEach(file => {
     const path = file.path || '';
     const name = file.name || path;
-    const haystack = `${path} ${name}`.toLowerCase();
-    if (normalized && !haystack.includes(normalized)) return;
-    const quotedPath = /\s/.test(path) ? `"${path}"` : path;
-    items.push({
-      type,
-      title: name,
-      subtitle: path,
-      meta: file.directory || file.extension || '',
-      insertText: `@${quotedPath} `,
-      badge: '@',
-    });
-  });
-  return items.slice(0, 14);
+   const haystack = `${path} ${name}`.toLowerCase();
+   if (normalized && !haystack.includes(normalized)) return;
+    // Compute priority: name-start > name-contain > path-only
+    let priority = 0;
+    if (normalized) {
+      const lowerName = name.toLowerCase();
+      if (!lowerName.includes(normalized)) {
+        priority = 2; // only path matched
+      } else if (!lowerName.startsWith(normalized)) {
+        priority = 1;
+      }
+    }
+   const quotedPath = /\s/.test(path) ? `"${path}"` : path;
+   items.push({
+     type,
+     title: name,
+     subtitle: path,
+     meta: file.directory || file.extension || '',
+     insertText: `@${quotedPath} `,
+     badge: '@',
+      _priority: priority,
+   });
+ });
+  if (normalized) items.sort((a, b) => a._priority - b._priority);
+ return items.slice(0, 14);
 }
 
 function closeReferencePicker() {
@@ -1971,7 +1996,8 @@ function renderReferencePicker(status = '') {
     // First render after open: build structure
     referencePickerEl.innerHTML = [
       '<div class="reference-picker-head">',
-      '  <span></span>',
+      '  <span class="reference-picker-title"></span>',
+      '  <span class="reference-picker-count"></span>',
       '  <small></small>',
       '</div>',
       '<div class="reference-picker-list"></div>',
@@ -1988,7 +2014,9 @@ function renderReferencePicker(status = '') {
   }
 
   // Update head
-  head.querySelector('span').textContent = title;
+  head.querySelector('.reference-picker-title').textContent = title;
+  const countEl = head.querySelector('.reference-picker-count');
+  countEl.textContent = items.length > 0 ? String(items.length) : '';
   head.querySelector("small").textContent = escapeHtml(referencePickerState.query ? lead + referencePickerState.query : lead);
 
   // Update list content - element preserved, scrollTop stays intact
