@@ -1845,6 +1845,44 @@ function showConfirm(msg, onConfirm) {
 // Chat
 const messagesEl = $('messages');
 const inputEl = $('input');
+// ── Input pill overlay ──
+const inputRow = inputEl.parentNode;
+const inputWrap = document.createElement('div');
+inputWrap.className = 'input-wrap';
+inputRow.insertBefore(inputWrap, inputEl);
+inputWrap.appendChild(inputEl);
+inputEl.style.background = 'transparent';
+
+// ── Contenteditable input: inline pill rendering ──
+function getInputText() { return inputEl.innerText || ''; }
+function setInputText(t) { inputEl.innerText = t; renderPills(); }
+
+function getCaret() {
+  const s = window.getSelection(); if (!s.rangeCount) return 0;
+  const r = s.getRangeAt(0), p = r.cloneRange();
+  p.selectNodeContents(inputEl); p.setEnd(r.endContainer, r.endOffset);
+  return p.toString().length;
+}
+function setCaret(pos) {
+  const s = window.getSelection(), r = document.createRange(); let rem = pos;
+  (function walk(n) {
+    if (n.nodeType===3) { const L=n.textContent.length;
+      if (rem<=L) { r.setStart(n,rem); r.collapse(1); s.removeAllRanges(); s.addRange(r); return 1; }
+      rem-=L; } else for (const c of n.childNodes) if (walk(c)) return 1;
+  })(inputEl)||(r.selectNodeContents(inputEl),r.collapse(0),s.removeAllRanges(),s.addRange(r));
+}
+function renderPills() {
+  const p = getCaret(), t = inputEl.innerText||'';
+  if (!t) { inputEl.innerHTML=''; return; }
+  inputEl.innerHTML = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/(^|\s)(\/\S+)/g,'$1<span class="ref-pill">$2</span>')
+    .replace(/(^|\s)(@\S+)/g,'$1<span class="ref-pill">$2</span>');
+  setCaret(Math.min(p,t.length));
+}
+inputEl.addEventListener('paste', e => { e.preventDefault();
+  document.execCommand('insertText',false,(e.clipboardData||window.clipboardData).getData('text/plain')); });
+inputEl.addEventListener('drop', e => e.preventDefault());
+
 const sendBtn = $('sendBtn');
 const inputArea = $('inputArea');
 const chatLayoutEl = document.querySelector('.chat-layout');
@@ -1894,9 +1932,9 @@ async function loadFileOptions(force = false) {
 
 function getReferenceTrigger() {
   if (!isAgentWorkspace() || !inputEl) return null;
-  const caret = inputEl.selectionStart ?? inputEl.value.length;
-  if ((inputEl.selectionEnd ?? caret) !== caret) return null;
-  const before = inputEl.value.slice(0, caret);
+  const caret = getCaret();
+  // contenteditable, no selection direction check
+  const before = getInputText().slice(0, caret);
   const match = before.match(/(^|[\s([{])([/@]\S*)$/);
   if (!match) return null;
   return {
@@ -2091,11 +2129,11 @@ async function updateReferencePicker({ force = false } = {}) {
 
 function insertReferenceItem(item) {
   const start = referencePickerState.tokenStart;
-  const end = inputEl.selectionStart ?? referencePickerState.tokenEnd;
-  const value = inputEl.value;
-  inputEl.value = `${value.slice(0, start)}${item.insertText}${value.slice(end)}`;
+  const end = getCaret();
+  const value = getInputText();
+  setInputText(value.slice(0, start) + item.insertText + value.slice(end));
   const caret = start + item.insertText.length;
-  inputEl.setSelectionRange(caret, caret);
+  setCaret(start + item.insertText.length);
   inputEl.style.height = 'auto';
   inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
   closeReferencePicker();
@@ -2262,7 +2300,7 @@ function shouldRenderMessage(message) {
   return true;
 }
 
-function useTip(el) { inputEl.value = el.textContent; inputEl.focus(); }
+function useTip(el) { setInputText(el.textContent); inputEl.focus(); }
 
 let markedConfigured = false;
 
@@ -2822,6 +2860,7 @@ inputEl.addEventListener('input', () => {
   inputEl.style.height = 'auto';
   inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
   updateReferencePicker();
+  renderPills();
 });
 
 inputEl.addEventListener('keydown', e => {
@@ -2904,7 +2943,7 @@ async function readCliStream(prompt, messages, context, onDelta, onSession) {
 
 async function legacySendMessage() {
   return sendMessage();
-  const text = inputEl.value.trim();
+  const text = getInputText().trim();
   if (!text || isStreaming) return;
   const cfg = getConfig();
   if (!cfg || (isAgentWorkspace() ? !isCliConfig(cfg) : isCliConfig(cfg))) {
@@ -2935,7 +2974,7 @@ async function legacySendMessage() {
   }
 
   appendBubble('user', text, true, { created: userCreated, kind: responseKind, projectId: responseProjectId });
-  inputEl.value = ''; inputEl.style.height = 'auto'; inputEl.focus();
+  setInputText(''); inputEl.style.height = 'auto'; inputEl.focus();
 
   isStreaming = true;
   sendBtn.innerHTML = sendButtonIcon('stop') + '<span>停止</span>';
@@ -3007,13 +3046,13 @@ async function legacySendMessage() {
 function legacyStopStreaming() { return stopStreaming(); }
 
 async function sendMessage() {
-  const text = inputEl.value.trim();
+  const text = getInputText().trim();
   const requestWorkspace = activeWorkspace;
   const requestIsAgent = requestWorkspace === AGENT_SCOPE;
   if (!text) return;
   if (requestIsAgent && isSkillListRequest(text)) {
     inputEl.focus();
-    inputEl.setSelectionRange(inputEl.value.length, inputEl.value.length);
+    setCaret(getInputText().length);
     await updateReferencePicker({ force: true });
     return;
   }
@@ -3067,7 +3106,7 @@ async function sendMessage() {
   renderSessionList();
 
   appendBubble('user', text, true, { created: userCreated, kind: responseKind, projectId: responseProjectId });
-  inputEl.value = '';
+  setInputText('');
   inputEl.style.height = 'auto';
   inputEl.focus();
 
