@@ -1922,10 +1922,10 @@ function filterReferenceItems(type, query, options) {
         subtitle: skill.description || skill.source || skill.path || '',
         meta: skill.source || '',
         insertText: `/${name} `,
-        badge: `/${name}`,
+        badge: "/",
       });
     });
-    return items.slice(0, 12);
+    return items.slice(0, 50);
   }
 
   options.forEach(file => {
@@ -1962,26 +1962,54 @@ function renderReferencePicker(status = '') {
   const lead = type === 'skill' ? '/' : '@';
   const items = referencePickerState.items || [];
   referencePickerEl.classList.remove('hidden');
-  referencePickerEl.innerHTML = `
-    <div class="reference-picker-head">
-      <span>${title}</span>
-      <small>${escapeHtml(referencePickerState.query ? `${lead}${referencePickerState.query}` : lead)}</small>
-    </div>
-    <div class="reference-picker-list">
-      ${status ? `<div class="reference-picker-empty">${escapeHtml(status)}</div>` : ''}
-      ${items.map((item, index) => `
-        <button class="reference-option${index === referencePickerState.activeIndex ? ' active' : ''}" data-index="${index}" type="button" role="option" aria-selected="${index === referencePickerState.activeIndex ? 'true' : 'false'}">
-          <span class="reference-option-mark">${escapeHtml(item.badge || lead)}</span>
-          <span class="reference-option-copy">
-            <strong>${escapeHtml(item.title)}</strong>
-            <small>${escapeHtml(item.subtitle || item.meta || '')}</small>
-          </span>
-        </button>
-      `).join('')}
-      ${!status && items.length === 0 ? '<div class="reference-picker-empty">没有匹配项</div>' : ''}
-    </div>
-  `;
-  referencePickerEl.querySelectorAll('.reference-option').forEach(button => {
+
+  // Preserve .reference-picker-list element across renders so scrollTop persists
+  let head = referencePickerEl.querySelector('.reference-picker-head');
+  let list = referencePickerEl.querySelector('.reference-picker-list');
+
+  if (!head || !list) {
+    // First render after open: build structure
+    referencePickerEl.innerHTML = [
+      '<div class="reference-picker-head">',
+      '  <span></span>',
+      '  <small></small>',
+      '</div>',
+      '<div class="reference-picker-list"></div>',
+    ].join('\n');
+    head = referencePickerEl.querySelector('.reference-picker-head');
+    list = referencePickerEl.querySelector('.reference-picker-list');
+    // Attach wheel listener once
+    list.addEventListener('wheel', e => {
+      if (list.scrollHeight > list.clientHeight) {
+        e.preventDefault();
+        list.scrollBy({ top: e.deltaY, behavior: 'auto' });
+      }
+    }, { passive: false });
+  }
+
+  // Update head
+  head.querySelector('span').textContent = title;
+  head.querySelector("small").textContent = escapeHtml(referencePickerState.query ? lead + referencePickerState.query : lead);
+
+  // Update list content - element preserved, scrollTop stays intact
+  list.innerHTML = [
+    status ? '<div class="reference-picker-empty">' + escapeHtml(status) + '</div>' : '',
+    items.map((item, index) =>
+      '<button class="reference-option' + (index === referencePickerState.activeIndex ? ' active' : '') +
+        '" data-index="' + index + '" type="button" role="option" aria-selected="' +
+        (index === referencePickerState.activeIndex ? 'true' : 'false') + '">' +
+        '<span class="reference-option-mark">' + escapeHtml(item.badge || lead) + '</span>' +
+        '<span class="reference-option-copy">' +
+          '<strong>' + escapeHtml(item.title) + '</strong>' +
+          '<small>' + escapeHtml(item.subtitle || item.meta || '') + '</small>' +
+        '</span>' +
+      '</button>'
+    ).join(''),
+    !status && items.length === 0 ? '<div class="reference-picker-empty">没有匹配项</div>' : '',
+  ].filter(Boolean).join('\n');
+
+  // Attach button event handlers
+  list.querySelectorAll('.reference-option').forEach(button => {
     button.onmouseenter = () => {
       referencePickerState.activeIndex = Number(button.dataset.index || 0);
       renderReferencePicker();
@@ -1992,6 +2020,12 @@ function renderReferencePicker(status = '') {
       if (item) insertReferenceItem(item);
     };
   });
+
+  // scroll active item into view so keyboard navigation follows selection
+  const activeButton = list.querySelector('.reference-option.active');
+  if (activeButton) {
+    activeButton.scrollIntoView({ block: 'nearest' });
+  }
 }
 
 async function updateReferencePicker({ force = false } = {}) {
