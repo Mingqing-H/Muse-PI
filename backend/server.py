@@ -8,6 +8,7 @@ import argparse
 import json
 import mimetypes
 import os
+import sys
 import re
 import shlex
 import shutil
@@ -18,7 +19,7 @@ from urllib.parse import parse_qs, urlparse
 import webbrowser
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
 DATA_DIR = Path.home() / ".musepi"
 DB_PATH = DATA_DIR / "musepi.sqlite"
 
