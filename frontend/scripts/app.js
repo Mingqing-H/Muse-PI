@@ -3307,4 +3307,80 @@ async function initApp() {
   updateModelBadge(); renderProjectControls(); renderProjects(); await refreshChat();
 }
 
+/* Copy handler: prepend list markers (bullets/numbers) to clipboard text */
+document.addEventListener('copy', e => {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  const bubble = range.commonAncestorContainer.parentElement?.closest?.('.msg.bot .bubble')
+    || (range.commonAncestorContainer.nodeType === 1
+      && range.commonAncestorContainer.closest?.('.msg.bot .bubble'));
+  if (!bubble) return;
+
+  // Build ordered list index map
+  const olMap = new Map();
+  bubble.querySelectorAll('ol > li').forEach(li => {
+    const ol = li.parentElement;
+    if (!olMap.has(ol)) olMap.set(ol, []);
+    olMap.get(ol).push(li);
+  });
+
+  function getMarker(li) {
+    const parent = li.parentElement;
+    if (parent.tagName === 'OL') {
+      const idx = (olMap.get(parent) || []).indexOf(li) + 1;
+      return idx + '. ';
+    }
+    return '- ';
+  }
+
+  // Tag the first text node of each selected LI with a marker prefix
+  bubble.querySelectorAll('li').forEach(li => {
+    if (!range.intersectsNode(li)) return;
+    const tw = document.createTreeWalker(li, NodeFilter.SHOW_TEXT);
+    const first = tw.nextNode();
+    if (first && first.textContent.trim()) first._listPrefix = getMarker(li);
+  });
+
+  // Build final text
+  const ancestor = range.commonAncestorContainer;
+  const isFullCopy = ancestor === bubble || (ancestor.nodeType === 1 && ancestor.contains(bubble));
+
+  if (isFullCopy) {
+    const lines = [];
+    function walk(node) {
+      if (node.nodeType === 3) {
+        lines.push({ text: node.textContent, prefix: node._listPrefix || '' });
+        return;
+      }
+      if (node.nodeType !== 1) return;
+      if (['SCRIPT', 'STYLE'].includes(node.tagName)) return;
+      if (node.tagName === 'BR') { lines.push({ text: '\n', prefix: '' }); return; }
+      const blockTags = ['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'TR'];
+      if (blockTags.includes(node.tagName) && lines.length && lines[lines.length - 1].text !== '\n') {
+        lines.push({ text: '\n', prefix: '' });
+      }
+      node.childNodes.forEach(walk);
+      if (blockTags.includes(node.tagName) && lines.length && lines[lines.length - 1].text !== '\n') {
+        lines.push({ text: '\n', prefix: '' });
+      }
+    }
+    walk(bubble);
+    let result = lines.map(l => l.prefix + l.text).join('');
+    result = result.replace(/\n{3,}/g, '\n\n').trim();
+    e.clipboardData.setData('text/plain', result);
+    e.preventDefault();
+  } else {
+    // Partial selection — use original nodes with _listPrefix
+    const parts = [];
+    const tw = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+    let n;
+    while ((n = tw.nextNode())) {
+      if (range.intersectsNode(n)) parts.push((n._listPrefix || '') + n.textContent);
+    }
+    e.clipboardData.setData('text/plain', parts.join(''));
+    e.preventDefault();
+  }
+});
+
 initApp();
