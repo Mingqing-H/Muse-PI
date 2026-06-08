@@ -1795,7 +1795,7 @@ function getMessageMetaText(role, meta = {}) {
 }
 
 function setBubbleMeta(bubble, role, meta = {}) {
-  const metaEl = bubble?.parentElement?.querySelector('.msg-meta');
+  const metaEl = bubble?.parentElement?.querySelector('.msg-meta-row .msg-meta');
   if (!metaEl) return;
   const text = getMessageMetaText(role, meta);
   metaEl.textContent = text;
@@ -2882,7 +2882,37 @@ function appendBubble(role, content, animate = true, meta = {}) {
   metaEl.classList.toggle('empty', !metaEl.textContent);
 
   contentWrap.appendChild(bubble);
-  contentWrap.appendChild(metaEl);
+
+  // 创建 meta 行容器（meta + 复制按钮）
+  const metaRow = document.createElement('div');
+  metaRow.className = 'msg-meta-row';
+  metaRow.appendChild(metaEl);
+
+  // 添加复制按钮（仅 AI 回复）
+  if (role !== 'user') {
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'msg-copy-btn';
+    copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+    copyBtn.title = '复制内容';
+    copyBtn.onclick = () => {
+      const text = bubbleToText(bubble);
+      navigator.clipboard.writeText(text).then(() => {
+        copyBtn.classList.add('copied');
+        copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
+        setTimeout(() => {
+          copyBtn.classList.remove('copied');
+          copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+        }, 2000);
+      }).catch(err => {
+        console.error('复制失败:', err);
+        showToast('复制失败', 'var(--rose)');
+      });
+    };
+    metaRow.appendChild(copyBtn);
+  }
+
+  contentWrap.appendChild(metaRow);
+
   div.appendChild(avatar);
   div.appendChild(contentWrap);
   messagesEl.appendChild(div);
@@ -3344,6 +3374,50 @@ async function initApp() {
   updateModelBadge(); renderProjectControls(); renderProjects(); await refreshChat();
 }
 
+/* Walk bubble DOM to produce clean copy text (handles math blocks inline) */
+function bubbleToText(bubble) {
+  const SKIP = new Set(['SCRIPT', 'STYLE']);
+  const BLOCK = new Set(['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'TABLE', 'THEAD', 'TBODY', 'TFOOT']);
+  const parts = [];
+  function walk(node) {
+    if (node.nodeType === 3) { parts.push(node.textContent); return; }
+    if (node.nodeType !== 1) return;
+    if (SKIP.has(node.tagName)) return;
+    if (node.classList?.contains('msg-copy-btn') || node.classList?.contains('math-copy-btn')) return;
+    if (node.tagName === 'BR') { parts.push('\n'); return; }
+    if (node.classList?.contains('math-block')) {
+      parts.push(node.getAttribute('data-latex') || '');
+      return;
+    }
+    if (node.classList?.contains('math-inline')) {
+      parts.push(node.getAttribute('data-latex') || '');
+      return;
+    }
+    // Table row → newline separator
+    if (node.tagName === 'TR') {
+      if (parts.length && parts[parts.length - 1] !== '\n') parts.push('\n');
+      const cells = Array.from(node.children).filter(c => c.tagName === 'TD' || c.tagName === 'TH');
+      cells.forEach((cell, i) => {
+        if (i > 0) parts.push('\t');
+        walk(cell);
+      });
+      if (parts.length && parts[parts.length - 1] !== '\n') parts.push('\n');
+      return;
+    }
+    // Skip standalone table cell (handled by TR above)
+    if (node.tagName === 'TD' || node.tagName === 'TH') {
+      node.childNodes.forEach(walk);
+      return;
+    }
+    const isBlock = BLOCK.has(node.tagName) || getComputedStyle(node).display === 'block';
+    if (isBlock && parts.length && parts[parts.length - 1] !== '\n') parts.push('\n');
+    node.childNodes.forEach(walk);
+    if (isBlock && parts.length && parts[parts.length - 1] !== '\n') parts.push('\n');
+  }
+  walk(bubble);
+  return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 /* Copy handler: prepend list markers (bullets/numbers) to clipboard text */
 document.addEventListener('copy', e => {
   const sel = window.getSelection();
@@ -3379,9 +3453,14 @@ document.addEventListener('copy', e => {
     if (first && first.textContent.trim()) first._listPrefix = getMarker(li);
   });
 
-  // Build final text
-  const ancestor = range.commonAncestorContainer;
-  const isFullCopy = ancestor === bubble || (ancestor.nodeType === 1 && ancestor.contains(bubble));
+  // Build final text — check if selection truly covers the entire bubble
+  const isFullCopy = (() => {
+    const full = document.createRange();
+    full.selectNodeContents(bubble);
+    if (!bubble.textContent.trim()) return true;
+    return range.compareBoundaryPoints(Range.START_TO_START, full) <= 0
+      && range.compareBoundaryPoints(Range.END_TO_END, full) >= 0;
+  })();
 
   if (isFullCopy) {
     const lines = [];
@@ -3392,8 +3471,32 @@ document.addEventListener('copy', e => {
       }
       if (node.nodeType !== 1) return;
       if (['SCRIPT', 'STYLE'].includes(node.tagName)) return;
+      if (node.classList?.contains('msg-copy-btn') || node.classList?.contains('math-copy-btn')) return;
       if (node.tagName === 'BR') { lines.push({ text: '\n', prefix: '' }); return; }
-      const blockTags = ['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'TR'];
+      if (node.classList?.contains('math-block')) {
+        lines.push({ text: node.getAttribute('data-latex') || '', prefix: '' });
+        return;
+      }
+      if (node.classList?.contains('math-inline')) {
+        lines.push({ text: node.getAttribute('data-latex') || '', prefix: '' });
+        return;
+      }
+      // Table row → cells joined by tabs, rows by newlines
+      if (node.tagName === 'TR') {
+        if (lines.length && lines[lines.length - 1].text !== '\n') lines.push({ text: '\n', prefix: '' });
+        const cells = Array.from(node.children).filter(c => c.tagName === 'TD' || c.tagName === 'TH');
+        cells.forEach((cell, i) => {
+          if (i > 0) lines.push({ text: '\t', prefix: '' });
+          walk(cell);
+        });
+        if (lines.length && lines[lines.length - 1].text !== '\n') lines.push({ text: '\n', prefix: '' });
+        return;
+      }
+      if (node.tagName === 'TD' || node.tagName === 'TH') {
+        node.childNodes.forEach(walk);
+        return;
+      }
+      const blockTags = ['P', 'DIV', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE', 'TABLE', 'THEAD', 'TBODY', 'TFOOT'];
       if (blockTags.includes(node.tagName) && lines.length && lines[lines.length - 1].text !== '\n') {
         lines.push({ text: '\n', prefix: '' });
       }
@@ -3418,6 +3521,13 @@ document.addEventListener('copy', e => {
     e.clipboardData.setData('text/plain', parts.join(''));
     e.preventDefault();
   }
+
+  // Cleanup _listPrefix markers to avoid stale data on next copy
+  bubble.querySelectorAll('li').forEach(li => {
+    const tw = document.createTreeWalker(li, NodeFilter.SHOW_TEXT);
+    const first = tw.nextNode();
+    if (first) delete first._listPrefix;
+  });
 });
 
 initApp();

@@ -1247,6 +1247,13 @@ body {
   align-items: flex-start;
 }
 
+/* meta 和复制按钮同行布局 */
+.msg-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .msg-meta {
   color: var(--muted-light);
   font-family: var(--font-mono);
@@ -1262,6 +1269,51 @@ body {
 
 .msg.user .msg-meta {
   text-align: right;
+}
+
+.msg.user .msg-meta-row {
+  justify-content: flex-end;
+}
+
+/* 消息复制按钮 */
+.msg-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 2px;
+  background: transparent;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  color: var(--muted-light);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.2s, color 0.2s, border-color 0.2s;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.msg-copy-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.msg:hover .msg-copy-btn {
+  opacity: 1;
+}
+
+.msg-copy-btn:hover {
+  background: var(--surface-lift);
+  color: var(--fg-cream);
+  border-color: var(--muted-light);
+}
+
+.msg-copy-btn.copied {
+  background: #22c55e;
+  color: #fff;
+  border-color: #22c55e;
+  opacity: 1;
 }
 
 .msg .avatar {
@@ -2568,6 +2620,23 @@ body {
 .msg-meta {
   color: oklch(94% 0.05 150 / 0.68);
   padding: 0 8px;
+}
+
+.msg-copy-btn {
+  border-radius: 8px;
+  background: oklch(100% 0 0 / 0.08);
+  border: 1px solid oklch(100% 0 0 / 0.14);
+}
+
+.msg-copy-btn:hover {
+  background: oklch(100% 0 0 / 0.14);
+  border-color: oklch(88% 0.10 92 / 0.45);
+}
+
+.msg-copy-btn.copied {
+  background: #22c55e;
+  color: #fff;
+  border-color: #22c55e;
 }
 
 .msg .bubble code,
