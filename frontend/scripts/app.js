@@ -2437,7 +2437,11 @@ function copyTable(button) {
   const table = wrapper.querySelector('table');
   if (!table) return;
 
-  // 从 DOM 提取表格数据为 TSV
+  // 构建带样式的 HTML（粘贴到 Word/飞书等保留表格格式）
+  const tableHtml = '<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;border:1px solid #999">'
+    + table.innerHTML + '</table>';
+
+  // 构建纯文本 TSV（粘贴到终端/记事本回退）
   const rows = [];
   table.querySelectorAll('tr').forEach(tr => {
     const cells = Array.from(tr.children).filter(c => c.tagName === 'TD' || c.tagName === 'TH');
@@ -2445,34 +2449,37 @@ function copyTable(button) {
   });
   const tsv = rows.join('\n');
 
-  navigator.clipboard.writeText(tsv).then(() => {
+  function showOk() {
     button.classList.add('copied');
     button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
     setTimeout(() => {
       button.classList.remove('copied');
       button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     }, 2000);
-  }).catch(err => {
-    console.error('复制表格失败:', err);
+  }
+
+  // 优先用 Clipboard API 同时写入 HTML + 纯文本
+  if (navigator.clipboard.write) {
+    const htmlBlob = new Blob([tableHtml], { type: 'text/html' });
+    const textBlob = new Blob([tsv], { type: 'text/plain' });
+    navigator.clipboard.write([
+      new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })
+    ]).then(showOk).catch(() => fallbackCopy());
+  } else {
+    fallbackCopy();
+  }
+
+  function fallbackCopy() {
+    // 降级：用 execCommand，只能写纯文本
     const textarea = document.createElement('textarea');
     textarea.value = tsv;
     textarea.style.position = 'fixed';
     textarea.style.opacity = '0';
     document.body.appendChild(textarea);
     textarea.select();
-    try {
-      document.execCommand('copy');
-      button.classList.add('copied');
-      button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
-      setTimeout(() => {
-        button.classList.remove('copied');
-        button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-      }, 2000);
-    } catch (e) {
-      console.error('降级复制也失败:', e);
-    }
+    try { document.execCommand('copy'); showOk(); } catch (e) { console.error('复制失败:', e); }
     document.body.removeChild(textarea);
-  });
+  }
 }
 
 /** 给 bubble 内所有表格添加复制按钮（DOMPurify 之后调用） */
@@ -2969,17 +2976,32 @@ function appendBubble(role, content, animate = true, meta = {}) {
     copyBtn.title = '复制内容';
     copyBtn.onclick = () => {
       const text = bubbleToText(bubble);
-      navigator.clipboard.writeText(text).then(() => {
+      const html = bubbleToHtml(bubble);
+      function showOk() {
         copyBtn.classList.add('copied');
         copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>';
         setTimeout(() => {
           copyBtn.classList.remove('copied');
           copyBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
         }, 2000);
-      }).catch(err => {
-        console.error('复制失败:', err);
-        showToast('复制失败', 'var(--rose)');
-      });
+      }
+      if (navigator.clipboard.write) {
+        const htmlBlob = new Blob([html], { type: 'text/html' });
+        const textBlob = new Blob([text], { type: 'text/plain' });
+        navigator.clipboard.write([
+          new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })
+        ]).then(showOk).catch(() => {
+          navigator.clipboard.writeText(text).then(showOk).catch(err => {
+            console.error('复制失败:', err);
+            showToast('复制失败', 'var(--rose)');
+          });
+        });
+      } else {
+        navigator.clipboard.writeText(text).then(showOk).catch(err => {
+          console.error('复制失败:', err);
+          showToast('复制失败', 'var(--rose)');
+        });
+      }
     };
     metaRow.appendChild(copyBtn);
   }
@@ -3456,7 +3478,7 @@ function bubbleToText(bubble) {
     if (node.nodeType === 3) { parts.push(node.textContent); return; }
     if (node.nodeType !== 1) return;
     if (SKIP.has(node.tagName)) return;
-    if (node.classList?.contains('msg-copy-btn') || node.classList?.contains('math-copy-btn')) return;
+    if (node.classList?.contains('msg-copy-btn') || node.classList?.contains('math-copy-btn') || node.classList?.contains('table-copy-btn')) return;
     if (node.tagName === 'BR') { parts.push('\n'); return; }
     if (node.classList?.contains('math-block')) {
       parts.push(node.getAttribute('data-latex') || '');
@@ -3489,6 +3511,32 @@ function bubbleToText(bubble) {
   }
   walk(bubble);
   return parts.join('').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** 克隆 bubble 并清理 UI 元素，返回可用于剪贴板的干净 HTML */
+function bubbleToHtml(bubble) {
+  const clone = bubble.cloneNode(true);
+  clone.querySelectorAll('.msg-copy-btn, .math-copy-btn, .table-copy-btn').forEach(el => el.remove());
+  // 公式块 → 替换为 LaTeX 源码
+  clone.querySelectorAll('.math-block').forEach(el => {
+    const latex = el.getAttribute('data-latex') || '';
+    const p = document.createElement('p');
+    p.textContent = latex;
+    el.replaceWith(p);
+  });
+  clone.querySelectorAll('.math-inline').forEach(el => {
+    const latex = el.getAttribute('data-latex') || '';
+    el.replaceWith(document.createTextNode(latex));
+  });
+  // 给 table 加上 border 属性确保粘贴时有边框
+  clone.querySelectorAll('table').forEach(t => {
+    t.setAttribute('border', '1');
+    t.setAttribute('cellpadding', '6');
+    t.setAttribute('cellspacing', '0');
+    t.style.borderCollapse = 'collapse';
+    t.style.border = '1px solid #999';
+  });
+  return clone.innerHTML;
 }
 
 /* Copy handler: prepend list markers (bullets/numbers) to clipboard text */
@@ -3544,7 +3592,7 @@ document.addEventListener('copy', e => {
       }
       if (node.nodeType !== 1) return;
       if (['SCRIPT', 'STYLE'].includes(node.tagName)) return;
-      if (node.classList?.contains('msg-copy-btn') || node.classList?.contains('math-copy-btn')) return;
+      if (node.classList?.contains('msg-copy-btn') || node.classList?.contains('math-copy-btn') || node.classList?.contains('table-copy-btn')) return;
       if (node.tagName === 'BR') { lines.push({ text: '\n', prefix: '' }); return; }
       if (node.classList?.contains('math-block')) {
         lines.push({ text: node.getAttribute('data-latex') || '', prefix: '' });
