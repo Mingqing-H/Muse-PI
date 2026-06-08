@@ -1,4 +1,4 @@
- # LLM Studio
+ # MUSE PI
  
  本地运行的 LLM 对话界面 —— 支持多模型提供商、Pi Agent 本地编程协作、会话持久化。零构建步骤，零外部 Python 依赖。
  

@@ -1,4 +1,4 @@
-"""Local HTTP server and SQLite persistence for LLM Studio."""
+"""Local HTTP server and SQLite persistence for MUSE PI."""
 
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import contextmanager
@@ -1665,7 +1665,7 @@ def stream_pi_cli(command, prompt, cwd, session_path=None, model_name=None):
         yield {"session": pi_session_info(final_session)}
 
 
-class LLMStudioHandler(SimpleHTTPRequestHandler):
+class MusePiHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(ROOT / "frontend"), **kwargs)
 
@@ -1920,16 +1920,16 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run LLM Studio with a local SQLite database.")
+    parser = argparse.ArgumentParser(description="Run MUSE PI with a local SQLite database.")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
     parser.add_argument("--port", type=int, default=PORT, help="Port to bind. Defaults to 9000.")
     args = parser.parse_args()
 
     init_db()
 
-    server = ThreadingHTTPServer((HOST, args.port), LLMStudioHandler)
+    server = ThreadingHTTPServer((HOST, args.port), MusePiHandler)
     url = f"http://{HOST}:{args.port}/index.html"
-    print(f"LLM Studio is running: {url}")
+    print(f"MUSE PI is running: {url}")
     print(f"SQLite database: {DB_PATH}")
 
     if not args.no_open:

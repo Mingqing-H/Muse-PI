@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project: LLM Studio
+## Project: MUSE PI
 
 A local web-based chat interface for LLM APIs and Pi CLI (a local coding agent). Chinese UI throughout. Zero-build-step project — no package managers, no bundler, no external Python dependencies.
 
@@ -26,7 +26,7 @@ No build step. Frontend is served as static files directly.
 
 ### Backend (`backend/server.py`) — Single-file monolith (~1670 lines)
 
-- `LLMStudioHandler` extends `SimpleHTTPRequestHandler`, serves `frontend/` as static files
+- `MusePiHandler` extends `SimpleHTTPRequestHandler`, serves `frontend/` as static files
 - REST API under `/api/` (GET/POST/DELETE) — see endpoint summary below
 - SQLite database at `data/llm_studio.sqlite` (schema version 6), tables: `app_meta`, `model_provider_configs`, `chat_sessions`, `chat_messages`
 - Pi CLI integration: spawns `pi --print` subprocess, streams stdout as NDJSON
