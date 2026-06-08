@@ -23,7 +23,7 @@ DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "llm_studio.sqlite"
 
 HOST = "127.0.0.1"
-PORT = 8765
+PORT = 9000
 
 SCHEMA_VERSION = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -1922,7 +1922,7 @@ class LLMStudioHandler(SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run LLM Studio with a local SQLite database.")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
-    parser.add_argument("--port", type=int, default=PORT, help="Port to bind. Defaults to 8765.")
+    parser.add_argument("--port", type=int, default=PORT, help="Port to bind. Defaults to 9000.")
     args = parser.parse_args()
 
     init_db()
