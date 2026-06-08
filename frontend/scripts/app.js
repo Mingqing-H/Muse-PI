@@ -2432,6 +2432,77 @@ function copyMathFormula(button) {
   });
 }
 
+function copyTable(button) {
+  const wrapper = button.closest('.table-wrapper');
+  const table = wrapper.querySelector('table');
+  if (!table) return;
+
+  // 从 DOM 提取表格数据为 TSV
+  const rows = [];
+  table.querySelectorAll('tr').forEach(tr => {
+    const cells = Array.from(tr.children).filter(c => c.tagName === 'TD' || c.tagName === 'TH');
+    rows.push(cells.map(c => c.textContent.trim()).join('\t'));
+  });
+  const tsv = rows.join('\n');
+
+  navigator.clipboard.writeText(tsv).then(() => {
+    button.classList.add('copied');
+    button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+    setTimeout(() => {
+      button.classList.remove('copied');
+      button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    }, 2000);
+  }).catch(err => {
+    console.error('复制表格失败:', err);
+    const textarea = document.createElement('textarea');
+    textarea.value = tsv;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      button.classList.add('copied');
+      button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => {
+        button.classList.remove('copied');
+        button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      }, 2000);
+    } catch (e) {
+      console.error('降级复制也失败:', e);
+    }
+    document.body.removeChild(textarea);
+  });
+}
+
+/** 给 bubble 内所有表格添加复制按钮（DOMPurify 之后调用） */
+function addTableCopyButtons(bubble) {
+  // 已有 wrapper 的表格，直接加按钮
+  bubble.querySelectorAll('.table-wrapper').forEach(wrapper => {
+    if (wrapper.querySelector('.table-copy-btn')) return;
+    const btn = document.createElement('button');
+    btn.className = 'table-copy-btn';
+    btn.title = '复制表格';
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    btn.addEventListener('click', () => copyTable(btn));
+    wrapper.appendChild(btn);
+  });
+  // marked 生成的裸 table，包一层再加按钮
+  bubble.querySelectorAll('table:not(.table-wrapper table)').forEach(table => {
+    if (table.closest('.table-wrapper')) return; // 已在 wrapper 内
+    const wrapper = document.createElement('div');
+    wrapper.className = 'table-wrapper';
+    table.parentNode.insertBefore(wrapper, table);
+    wrapper.appendChild(table);
+    const btn = document.createElement('button');
+    btn.className = 'table-copy-btn';
+    btn.title = '复制表格';
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    btn.addEventListener('click', () => copyTable(btn));
+    wrapper.appendChild(btn);
+  });
+}
+
 function isTableDivider(line) {
   return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
 }
@@ -2485,7 +2556,8 @@ function renderBasicMarkdown(content) {
         i += 1;
       }
       i -= 1;
-      blocks.push(`<table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${row.map(cell => `<td>${renderInlineMarkdown(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+      const tableHtml = `<table><thead><tr>${headers.map(cell => `<th>${renderInlineMarkdown(cell)}</th>`).join('')}</tr></thead><tbody>${rows.map(row => `<tr>${row.map(cell => `<td>${renderInlineMarkdown(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+      blocks.push(`<div class="table-wrapper">${tableHtml}</div>`);
       continue;
     }
 
@@ -2817,6 +2889,7 @@ function setBubbleContent(bubble, role, content, renderRich = role !== 'user', r
   bubble.innerHTML = renderMarkdown(content);
   if (renderMath && window.MathJax?.typesetPromise) typesetMath(bubble);
   else applyMathFallback(bubble);
+  addTableCopyButtons(bubble);
   appendProjectImagePreviews(bubble, content, meta);
 }
 
