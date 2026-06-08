@@ -3503,6 +3503,7 @@ function buildRoundNav() {
   });
   list.innerHTML = html;
   updateActiveRound();
+  list.scrollTop = list.scrollHeight;
 }
 
 function scrollToRound(index) {
@@ -3554,6 +3555,12 @@ function updateActiveRound() {
   items.forEach((item, i) => {
     item.classList.toggle('active', i === activeIndex);
   });
+
+  // Scroll nav list to keep active item visible
+  const navList = document.getElementById('roundNavList');
+  if (navList && items[activeIndex]) {
+    items[activeIndex].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
 }
 
 
