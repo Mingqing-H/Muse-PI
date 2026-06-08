@@ -1,4 +1,4 @@
-const PRESETS = [
+﻿const PRESETS = [
   { name: 'MiMo',     url: 'https://token-plan-cn.xiaomimimo.com/v1/chat/completions', models: ['mimo-v2.5-pro', 'mimo-v2.5'] },
   { name: 'OpenAI',   url: 'https://api.openai.com/v1/chat/completions', models: ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'gpt-4o-mini'] },
   { name: 'DeepSeek', url: 'https://api.deepseek.com/v1/chat/completions', models: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner'] },
@@ -2898,6 +2898,19 @@ function setBubbleContent(bubble, role, content, renderRich = role !== 'user', r
   else applyMathFallback(bubble);
   addTableCopyButtons(bubble);
   appendProjectImagePreviews(bubble, content, meta);
+  /* General image enhancements: lazy loading & click-to-open for non-project images */
+  bubble.querySelectorAll('img:not(.project-inline-image)').forEach(img => {
+    img.loading = 'lazy';
+    img.decoding = 'async';
+    if (!img.closest('a')) {
+      const link = document.createElement('a');
+      link.href = img.getAttribute('src') || '';
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      img.parentNode.insertBefore(link, img);
+      link.appendChild(img);
+    }
+  });
 }
 
 function createRichStreamRenderer(bubble, meta = {}) {

@@ -1494,6 +1494,19 @@ body {
   text-decoration-color: oklch(72% 0.10 75 / 0.45);
 }
 
+
+/* ©¤©¤ All images in bubbles: constrain size ©¤©¤ */
+.msg.bot .bubble img {
+  max-width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 2px;
+  display: block;
+  margin: 0.2em 0;
+  cursor: pointer;
+  transition: filter 0.2s ease;
+}
+
 .msg.bot .bubble .project-inline-image,
 .msg.bot .bubble .project-image-card img {
   display: block;
@@ -3975,7 +3988,7 @@ body {
   color: oklch(92% 0.06 250);
 }
 
-/* Textarea â€” transparent, pills overlay visible underneath */
+/* Textarea â€?transparent, pills overlay visible underneath */
 #input {
   display: block;
   width: 100%;
