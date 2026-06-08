@@ -1,4 +1,4 @@
-*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+ï»¿*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 :root {
   --bg: #0e0c0b;
@@ -1495,7 +1495,7 @@ body {
 }
 
 
-/* ©¤©¤ All images in bubbles: constrain size ©¤©¤ */
+/* ï¿½ï¿½ï¿½ï¿½ All images in bubbles: constrain size ï¿½ï¿½ï¿½ï¿½ */
 .msg.bot .bubble img {
   max-width: 100%;
   max-height: 420px;
@@ -3988,7 +3988,7 @@ body {
   color: oklch(92% 0.06 250);
 }
 
-/* Textarea â€?transparent, pills overlay visible underneath */
+/* Textarea ï¿½?transparent, pills overlay visible underneath */
 #input {
   display: block;
   width: 100%;
@@ -4027,4 +4027,182 @@ body {
   color: var(--muted);
   cursor: text;
   pointer-events: none;
+}
+
+/* â”€â”€ Round Navigator (right side) â”€â”€ */
+.round-nav {
+  position: relative;
+  width: 44px;
+  min-width: 44px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background: oklch(12% 0.015 50 / 0.38);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid oklch(100% 0 0 / 0.08);
+  border-radius: 18px;
+  overflow: hidden;
+  transition: width 0.45s var(--ease-out-expo), opacity 0.35s;
+}
+
+/* â”€â”€ Round nav header â”€â”€ */
+.round-nav-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 8px 0 6px;
+  border-bottom: 1px solid oklch(100% 0 0 / 0.08);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.round-nav-count {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.round-nav-label {
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  opacity: 0.65;
+}
+.round-nav-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+.round-nav-container::before {
+  content: '';
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 50%;
+  width: 1px;
+  background: oklch(100% 0 0 / 0.10);
+  z-index: 0;
+  transform: translateX(-50%);
+}
+
+.round-nav-list {
+  flex: 1;
+  width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 10px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
+  scrollbar-width: none;
+  position: relative;
+  z-index: 1;
+}
+
+.round-nav-list::-webkit-scrollbar { display: none; }
+
+.round-nav-item {
+  position: relative;
+  width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: var(--muted);
+  padding: 0;
+  flex-shrink: 0;
+  transition: opacity 0.25s;
+}
+
+.round-nav-item .round-nav-dot {
+  position: relative;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-light);
+  background: oklch(14% 0.02 50 / 0.80);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--muted);
+  transition: all 0.35s var(--ease-out-expo);
+  user-select: none;
+}
+
+.round-nav-item:hover .round-nav-dot {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: oklch(72% 0.10 75 / 0.14);
+  transform: scale(1.12);
+}
+
+.round-nav-item.active .round-nav-dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--bg);
+  box-shadow: 0 0 0 3px oklch(72% 0.10 75 / 0.20), 0 0 14px oklch(72% 0.10 75 / 0.18);
+  transform: scale(1.05);
+}
+
+/* Tooltip on hover */
+.round-nav-item .round-nav-tip {
+  position: absolute;
+  right: calc(100% + 10px);
+  top: 50%;
+  z-index: 20;
+  transform: translateY(-50%) translateX(4px);
+  background: oklch(14% 0.02 50 / 0.96);
+  border: 1px solid var(--border-light);
+  border-radius: 10px;
+  padding: 5px 12px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fg-cream);
+  white-space: nowrap;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  box-shadow: 0 10px 30px oklch(0% 0 0 / 0.40);
+}
+
+.round-nav-item:hover .round-nav-tip {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+
+.round-nav-item:first-child .round-nav-dot {
+  margin-top: 2px;
+}
+
+/* Hide round nav on smaller screens */
+@media (max-width: 900px) {
+  .round-nav {
+    display: none;
+  }
 }

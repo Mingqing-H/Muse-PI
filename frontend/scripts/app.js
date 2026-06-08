@@ -2265,6 +2265,7 @@ function renderMessages() {
   }));
   renderInFlightMessage(sessionKind, getActiveId());
   scrollToBottom();
+  buildRoundNav();
 }
 
 function renderInFlightMessage(scope, sessionId) {
@@ -3465,6 +3466,97 @@ function spawnClickRipple(event) {
 
 document.addEventListener('pointerdown', spawnClickRipple);
 
+/* ── Round Navigator (right side) ── */
+let roundNavScrollHandler = null;
+
+function initRoundNav() {
+  if (roundNavScrollHandler) {
+    messagesEl.removeEventListener('scroll', roundNavScrollHandler);
+  }  roundNavScrollHandler = () => updateActiveRound();
+  messagesEl.addEventListener('scroll', roundNavScrollHandler, { passive: true });
+}
+
+function buildRoundNav() {
+  const list = document.getElementById('roundNavList');
+  if (!list) return;
+
+  const msgs = messagesEl.querySelectorAll(':scope > .msg.user');
+  const count = msgs.length;
+
+  const countEl = document.getElementById('roundNavCount');
+  if (countEl) countEl.textContent = count;
+
+  if (count === 0) {
+    list.innerHTML = '';
+    return;
+  }
+
+  let html = '';
+  msgs.forEach((msg, i) => {
+    const text = (msg.querySelector('.bubble')?.textContent || '').trim().slice(0, 28);
+    const preview = text || ('消息 ' + (i + 1));
+    const roundNum = i + 1;
+    html += '<button class="round-nav-item" data-round="' + roundNum + '" data-index="' + i + '" title="' + escapeHtml(preview) + '" onclick="scrollToRound(' + i + ')">' +
+      '<span class="round-nav-dot">' + roundNum + '</span>' +
+      '<span class="round-nav-tip">' + escapeHtml(preview) + '</span>' +
+      '</button>';
+  });
+  list.innerHTML = html;
+  updateActiveRound();
+}
+
+function scrollToRound(index) {
+  const msgs = messagesEl.querySelectorAll(':scope > .msg.user');
+  if (index >= 0 && index < msgs.length) {
+    const target = msgs[index];
+    const top = target.offsetTop - messagesEl.offsetTop - 20;
+    messagesEl.scrollTo({ top, behavior: 'smooth' });
+  }
+}
+
+function updateActiveRound() {
+  const items = document.querySelectorAll('.round-nav-item');
+  if (items.length === 0) return;
+
+  const msgs = messagesEl.querySelectorAll(':scope > .msg');
+  if (msgs.length === 0) return;
+
+  const scrollTop = messagesEl.scrollTop;
+  const viewHeight = messagesEl.clientHeight;
+  const viewBottom = scrollTop + viewHeight;
+  const centerY = scrollTop + viewHeight * 0.4;
+  const userMsgs = messagesEl.querySelectorAll(':scope > .msg.user');
+  let activeIndex = -1;
+
+  // Find the last user message whose top is at or above center of viewport
+  msgs.forEach((msg) => {
+    const msgTop = msg.offsetTop - messagesEl.offsetTop;
+    if (msgTop <= centerY + 50 && msg.classList.contains('user')) {
+      let idx = 0;
+      userMsgs.forEach((u) => {
+        if (u === msg) activeIndex = idx;
+        if (u.offsetTop - messagesEl.offsetTop <= msgTop) idx++;
+      });
+    }
+  });
+
+  // Fallback: last user message visible near bottom
+  if (activeIndex < 0) {
+    userMsgs.forEach((u, i) => {
+      if (u.offsetTop - messagesEl.offsetTop < viewBottom + 100) {
+        activeIndex = i;
+      }
+    });
+  }
+
+  if (activeIndex < 0) activeIndex = 0;
+  if (activeIndex >= items.length) activeIndex = items.length - 1;
+  items.forEach((item, i) => {
+    item.classList.toggle('active', i === activeIndex);
+  });
+}
+
+
 // Init
 async function initApp() {
   try {
@@ -3480,6 +3572,7 @@ async function initApp() {
   renderPresets();
   setConfigScope(CHAT_SCOPE);
   updateModelBadge(); renderProjectControls(); renderProjects(); await refreshChat();
+  initRoundNav();
 }
 
 /* Walk bubble DOM to produce clean copy text (handles math blocks inline) */
