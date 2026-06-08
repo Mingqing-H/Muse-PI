@@ -2380,7 +2380,8 @@ function extractMath(content) {
 function restoreMath(html, blocks, inlines) {
   let output = blocks.reduce((current, source, index) => {
     const token = `MATHBLOCK${index}`;
-    const block = `<div class="math-block" data-latex="${escapeHtml(source)}">${escapeHtml(source)}</div>`;
+    const escapedSource = escapeHtml(source);
+    const block = `<div class="math-block" data-latex="${escapedSource}"><span class="math-content">${escapedSource}</span><button class="math-copy-btn" onclick="copyMathFormula(this)" title="复制公式"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button></div>`;
     return current
       .replace(new RegExp(`<p>\\s*${token}\\s*</p>`, 'g'), block)
       .replace(new RegExp(token, 'g'), block);
@@ -2393,6 +2394,42 @@ function restoreMath(html, blocks, inlines) {
   }, output);
 
   return output;
+}
+
+function copyMathFormula(button) {
+  const mathBlock = button.closest('.math-block');
+  const latex = mathBlock.getAttribute('data-latex');
+
+  navigator.clipboard.writeText(latex).then(() => {
+    // 复制成功，显示反馈
+    button.classList.add('copied');
+    button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+    setTimeout(() => {
+      button.classList.remove('copied');
+      button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    }, 2000);
+  }).catch(err => {
+    console.error('复制失败:', err);
+    // 降级方案
+    const textarea = document.createElement('textarea');
+    textarea.value = latex;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      button.classList.add('copied');
+      button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+      setTimeout(() => {
+        button.classList.remove('copied');
+        button.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+      }, 2000);
+    } catch (e) {
+      console.error('降级复制也失败:', e);
+    }
+    document.body.removeChild(textarea);
+  });
 }
 
 function isTableDivider(line) {

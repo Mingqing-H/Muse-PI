@@ -1567,6 +1567,47 @@ body {
   background: var(--bg-warm);
   border: 1px solid var(--border);
   text-align: center;
+  position: relative;
+}
+
+.msg.bot .bubble .math-block .math-content {
+  display: block;
+}
+
+.msg.bot .bubble .math-block .math-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s, background 0.2s, color 0.2s;
+}
+
+.msg.bot .bubble .math-block:hover .math-copy-btn {
+  opacity: 1;
+}
+
+.msg.bot .bubble .math-block .math-copy-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.msg.bot .bubble .math-block .math-copy-btn.copied {
+  background: #22c55e;
+  color: #fff;
+  border-color: #22c55e;
+  opacity: 1;
 }
 
 .msg.bot .bubble .math-inline {
