@@ -2006,7 +2006,7 @@ function filterReferenceItems(type, query, options) {
    });
  });
   if (normalized) items.sort((a, b) => a._priority - b._priority);
- return items.slice(0, 14);
+ return items.slice(0, 50);
 }
 
 function closeReferencePicker() {
