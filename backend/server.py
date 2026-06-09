@@ -19,6 +19,8 @@ import time
 from urllib.parse import parse_qs, urlparse
 import webbrowser
 
+# PyInstaller console=False 打包后 subprocess 会弹黑窗，加此标志抑制
+_WIN_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
 
 ROOT = Path(sys._MEIPASS) if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent.parent
 DATA_DIR = Path.home() / ".musepi"
@@ -484,6 +486,7 @@ def git_branch_status(path):
             encoding="utf-8",
             errors="replace",
             timeout=2,
+            creationflags=_WIN_FLAGS,
         )
         if probe.returncode != 0 or (probe.stdout or "").strip() != "true":
             return {"gitBranch": "", "gitBranchDetached": False}
@@ -496,6 +499,7 @@ def git_branch_status(path):
             encoding="utf-8",
             errors="replace",
             timeout=2,
+            creationflags=_WIN_FLAGS,
         )
         branch = (current.stdout or "").strip()
         if branch:
@@ -509,6 +513,7 @@ def git_branch_status(path):
             encoding="utf-8",
             errors="replace",
             timeout=2,
+            creationflags=_WIN_FLAGS,
         )
         sha = (head.stdout or "").strip()
         return {"gitBranch": f"detached@{sha}" if sha else "", "gitBranchDetached": bool(sha)}
@@ -862,6 +867,7 @@ def list_pi_models(command=""):
             encoding="utf-8",
             errors="replace",
             timeout=12,
+            creationflags=_WIN_FLAGS,
         )
         raw_output = proc.stdout or ""
         if proc.returncode != 0:
@@ -1641,6 +1647,7 @@ def stream_local_cli(command, prompt, cwd, session_path=None, model_name=None):
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            creationflags=_WIN_FLAGS,
         )
     except FileNotFoundError:
         yield {"error": f"找不到命令：{args[0]}。请确认 Pi CLI 已安装并在 PATH 中，或填写完整路径。"}
@@ -1961,6 +1968,13 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=PORT, help="Port to bind. Defaults to 9000.")
     args = parser.parse_args()
 
+    # PyInstaller console=False 时 sys.stdout/stderr 为 None，http.server 写日志必崩
+    if getattr(sys, 'frozen', False):
+        if sys.stdout is None:
+            sys.stdout = open(os.devnull, 'w')
+        if sys.stderr is None:
+            sys.stderr = open(os.devnull, 'w')
+
     init_db()
 
     # 启动前清理：杀掉同一端口上的旧进程（否则旧进程不退，端口一直跳）
@@ -1969,6 +1983,7 @@ if __name__ == "__main__":
     try:
         result = subprocess.run(
             ["netstat", "-ano"], capture_output=True, text=True, timeout=5,
+            creationflags=_WIN_FLAGS,
         )
         for line in result.stdout.splitlines():
             if f":{port}" in line and "LISTENING" in line:
@@ -1979,6 +1994,7 @@ if __name__ == "__main__":
                         subprocess.run(
                             ["taskkill", "/F", "/PID", old_pid],
                             capture_output=True, timeout=5,
+                            creationflags=_WIN_FLAGS,
                         )
                         print(f"清理端口 {port} 上的旧进程 ({old_pid})")
                     except Exception:
