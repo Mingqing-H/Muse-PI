@@ -1,5 +1,6 @@
 """Local HTTP server and SQLite persistence for MUSE PI."""
 
+import socket
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1962,10 +1963,33 @@ if __name__ == "__main__":
 
     init_db()
 
-    # 自动找可用端口
+    # 启动前清理：杀掉同一端口上的旧进程（否则旧进程不退，端口一直跳）
     port = args.port
+    my_pid = os.getpid()
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.strip().split()
+                old_pid = parts[-1]
+                if old_pid.isdigit() and int(old_pid) != my_pid:
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/PID", old_pid],
+                            capture_output=True, timeout=5,
+                        )
+                        print(f"清理端口 {port} 上的旧进程 ({old_pid})")
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # 自动找可用端口
     while True:
         try:
+            ThreadingHTTPServer.allow_reuse_address = True  # 端口立即可复用
             server = ThreadingHTTPServer((HOST, port), MusePiHandler)
             break
         except OSError:
@@ -1973,10 +1997,13 @@ if __name__ == "__main__":
             port += 1
 
     url = f"http://{HOST}:{port}/index.html"
-    print(f"MUSE PI is running: {url}")
-    print(f"SQLite database: {DB_PATH}")
+    print(f"\n============================================")
+    print(f"  MUSE PI 已启动")
+    print(f"  地址: {url}")
+    print(f"  数据库: {DB_PATH}")
+    print(f"============================================\n")
 
     if not args.no_open:
-        webbrowser.open(url)
+        webbrowser.open(url, new=2)  # new=2: 强制新标签页
 
     server.serve_forever()
