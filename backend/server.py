@@ -25,6 +25,8 @@ DB_PATH = DATA_DIR / "musepi.sqlite"
 
 HOST = "127.0.0.1"
 PORT = 9000
+HEARTBEAT_TIMEOUT = 10  # 浏览器心跳超时秒数，超时自动关闭服务器
+_last_heartbeat = time.time()
 
 SCHEMA_VERSION = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -1838,6 +1840,12 @@ class MusePiHandler(SimpleHTTPRequestHandler):
                 self.send_json(list_pi_models(provider_config.get("apiUrl") if provider == "Pi CLI" else ""))
             return
 
+        if parsed_path == "/api/heartbeat":
+            global _last_heartbeat
+            _last_heartbeat = time.time()
+            self.send_json({"ok": True})
+            return
+
         super().do_GET()
 
     def do_POST(self):
@@ -1928,6 +1936,21 @@ class MusePiHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": False, "error": "Unknown endpoint"}, status=404)
 
 
+def start_heartbeat_checker():
+    """后台线程：浏览器关闭后自动关停服务器"""
+    import threading
+
+    def checker():
+        while True:
+            time.sleep(3)
+            if time.time() - _last_heartbeat > HEARTBEAT_TIMEOUT:
+                print("浏览器已关闭，服务器自动退出。")
+                os._exit(0)
+
+    t = threading.Thread(target=checker, daemon=True)
+    t.start()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run MUSE PI with a local SQLite database.")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
@@ -1936,8 +1959,19 @@ if __name__ == "__main__":
 
     init_db()
 
-    server = ThreadingHTTPServer((HOST, args.port), MusePiHandler)
-    url = f"http://{HOST}:{args.port}/index.html"
+    # 自动找可用端口
+    port = args.port
+    while True:
+        try:
+            server = ThreadingHTTPServer((HOST, port), MusePiHandler)
+            break
+        except OSError:
+            print(f"端口 {port} 被占用，尝试 {port + 1}...")
+            port += 1
+
+    start_heartbeat_checker()
+
+    url = f"http://{HOST}:{port}/index.html"
     print(f"MUSE PI is running: {url}")
     print(f"SQLite database: {DB_PATH}")
 

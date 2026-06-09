@@ -3592,6 +3592,11 @@ async function initApp() {
   setConfigScope(CHAT_SCOPE);
   updateModelBadge(); renderProjectControls(); renderProjects(); await refreshChat();
   initRoundNav();
+
+  // 每5秒发心跳，保持服务器存活；浏览器关闭后10秒服务器自动退出
+  setInterval(() => {
+    fetch('/api/heartbeat').catch(() => {});
+  }, 5000);
 }
 
 /* Walk bubble DOM to produce clean copy text (handles math blocks inline) */
