@@ -648,6 +648,13 @@ def latest_user_prompt(messages):
     return ""
 
 
+def resolve_at_paths(prompt, cwd):
+    """Strip @ from @file reference blocks — only when @ starts a word/tag."""
+    if not prompt or not cwd:
+        return prompt
+    return re.sub(r"(^|\s)@(\S+)", r"\1\2", prompt)
+
+
 def split_command(command):
     command = (command or "").strip()
     if not command:
@@ -1726,6 +1733,7 @@ class MusePiHandler(SimpleHTTPRequestHandler):
         except ValueError:
             self.stream_ndjson([{"error": "项目文件夹不存在，无法继续对话"}], status=400)
             return
+        prompt = resolve_at_paths(prompt, cwd)
         session_path = resolve_pi_session_path(payload.get("piSessionPath"))
         self.stream_ndjson(stream_pi_cli(command, prompt, cwd, session_path, model_name))
 

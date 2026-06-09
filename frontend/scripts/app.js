@@ -1871,12 +1871,24 @@ function setCaret(pos) {
       rem-=L; } else for (const c of n.childNodes) if (walk(c)) return 1;
   })(inputEl)||(r.selectNodeContents(inputEl),r.collapse(0),s.removeAllRanges(),s.addRange(r));
 }
+function getKnownFileNames() {
+  if (!isAgentWorkspace()) return new Set();
+  const files = fileOptionsCache[referenceCacheKey()] || [];
+  const names = new Set();
+  files.forEach(f => { if (f.name) names.add(f.name); if (f.path) names.add(f.path); });
+  return names;
+}
+
 function renderPills() {
   const p = getCaret(), t = inputEl.innerText||'';
   if (!t) { inputEl.innerHTML=''; return; }
+  const knownFiles = getKnownFileNames();
   inputEl.innerHTML = t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
     .replace(/(^|\s)(\/\S+)/g,'$1<span class="ref-pill">$2</span>')
-    .replace(/(^|\s)(@\S+)/g,'$1<span class="ref-pill">$2</span>');
+    .replace(/(^|\s)(@\S+)/g, (match, prefix, ref) => {
+      if (knownFiles.size && knownFiles.has(ref.slice(1))) return `${prefix}<span class="ref-pill">${ref}</span>`;
+      return match;
+    });
   setCaret(Math.min(p,t.length));
 }
 inputEl.addEventListener('paste', e => { e.preventDefault();
