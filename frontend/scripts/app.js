@@ -3593,10 +3593,12 @@ async function initApp() {
   updateModelBadge(); renderProjectControls(); renderProjects(); await refreshChat();
   initRoundNav();
 
-  // 每5秒发心跳，保持服务器存活；浏览器关闭后10秒服务器自动退出
-  setInterval(() => {
-    fetch('/api/heartbeat').catch(() => {});
-  }, 5000);
+  // 标签页引用计数：注册 → 注销；最后一个标签页关闭时退服
+  const tabId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2);
+  fetch(`/api/hello?tab=${encodeURIComponent(tabId)}`, { method: 'POST' }).catch(() => {});
+  window.addEventListener('pagehide', () => {
+    navigator.sendBeacon(`/api/bye?tab=${encodeURIComponent(tabId)}`, '');
+  });
 }
 
 /* Walk bubble DOM to produce clean copy text (handles math blocks inline) */

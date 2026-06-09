@@ -25,8 +25,7 @@ DB_PATH = DATA_DIR / "musepi.sqlite"
 
 HOST = "127.0.0.1"
 PORT = 9000
-HEARTBEAT_TIMEOUT = 10  # 浏览器心跳超时秒数，超时自动关闭服务器
-_last_heartbeat = time.time()
+_active_tabs = set()  # 活跃标签页 ID 集合，全空时退服
 
 SCHEMA_VERSION = 7
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
@@ -1840,16 +1839,35 @@ class MusePiHandler(SimpleHTTPRequestHandler):
                 self.send_json(list_pi_models(provider_config.get("apiUrl") if provider == "Pi CLI" else ""))
             return
 
-        if parsed_path == "/api/heartbeat":
-            global _last_heartbeat
-            _last_heartbeat = time.time()
-            self.send_json({"ok": True})
-            return
-
         super().do_GET()
 
     def do_POST(self):
         try:
+            global _active_tabs
+            parsed_path = urlparse(self.path).path
+            # 标签页引用计数：开一个注册，关一个注销，全部关闭才退服
+            if parsed_path == "/api/hello":
+                params = parse_qs(urlparse(self.path).query)
+                tab_id = (params.get("tab") or [""])[0]
+                if tab_id:
+                    _active_tabs.add(tab_id)
+                    print(f"标签页上线 ({tab_id})，当前 {len(_active_tabs)} 个")
+                self.send_json({"ok": True, "count": len(_active_tabs)})
+                return
+
+            if parsed_path == "/api/bye":
+                params = parse_qs(urlparse(self.path).query)
+                tab_id = (params.get("tab") or [""])[0]
+                if tab_id and tab_id in _active_tabs:
+                    _active_tabs.discard(tab_id)
+                    print(f"标签页下线 ({tab_id})，剩余 {len(_active_tabs)} 个")
+                if not _active_tabs:
+                    print("所有标签页已关闭，服务器退出。")
+                    self.send_json({"ok": True})
+                    os._exit(0)
+                self.send_json({"ok": True})
+                return
+
             payload = self.read_json()
             if self.path == "/api/cli/chat":
                 self.stream_cli_chat(payload)
@@ -1936,21 +1954,6 @@ class MusePiHandler(SimpleHTTPRequestHandler):
         self.send_json({"ok": False, "error": "Unknown endpoint"}, status=404)
 
 
-def start_heartbeat_checker():
-    """后台线程：浏览器关闭后自动关停服务器"""
-    import threading
-
-    def checker():
-        while True:
-            time.sleep(3)
-            if time.time() - _last_heartbeat > HEARTBEAT_TIMEOUT:
-                print("浏览器已关闭，服务器自动退出。")
-                os._exit(0)
-
-    t = threading.Thread(target=checker, daemon=True)
-    t.start()
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run MUSE PI with a local SQLite database.")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
@@ -1968,8 +1971,6 @@ if __name__ == "__main__":
         except OSError:
             print(f"端口 {port} 被占用，尝试 {port + 1}...")
             port += 1
-
-    start_heartbeat_checker()
 
     url = f"http://{HOST}:{port}/index.html"
     print(f"MUSE PI is running: {url}")
