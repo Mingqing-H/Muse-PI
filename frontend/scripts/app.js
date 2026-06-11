@@ -1624,6 +1624,84 @@ function piPathKey(path) {
   return (path || '').replace(/\\/g, '/').toLowerCase();
 }
 
+function normalizeMessageContent(content) {
+  return (content || '').replace(/\s+/g, ' ').trim();
+}
+
+function firstUserMessageContent(session) {
+  const first = (session?.messages || []).find(message => message?.role === 'user');
+  return normalizeMessageContent(first?.content);
+}
+
+function findLocalSessionForPiSession(sessions, piSession, projectId, pathToId) {
+  const key = piPathKey(piSession.piSessionPath);
+  if (key && pathToId.has(key)) return pathToId.get(key);
+  if (sessions[piSession.id]) return piSession.id;
+
+  const piFirstUser = firstUserMessageContent(piSession);
+  if (!piFirstUser) return null;
+
+  const candidates = Object.entries(sessions)
+    .filter(([, session]) => (
+      getSessionKind(session) === AGENT_SCOPE
+      && (session.projectId || 'default') === projectId
+      && !piPathKey(session.piSessionPath)
+      && firstUserMessageContent(session) === piFirstUser
+    ))
+    .sort(([, a], [, b]) => (b.created || 0) - (a.created || 0));
+  return candidates[0]?.[0] || null;
+}
+
+function mergePiSessionIntoLocalSession(localSession, piSession, existingId) {
+  const localMessages = localSession.messages || [];
+  const piMessages = piSession.messages || [];
+  const isRunning = localSession.status === 'running' || !!getSessionFlight(AGENT_SCOPE, existingId);
+  const useLocalMessages = isRunning || localMessages.length >= piMessages.length;
+  return {
+    ...localSession,
+    ...piSession,
+    id: existingId,
+    title: localSession.customTitle || localSession.title || piSession.title,
+    customTitle: localSession.customTitle || '',
+    status: isRunning ? 'running' : (localSession.status || piSession.status || 'idle'),
+    created: localSession.created || piSession.created,
+    messages: useLocalMessages ? localMessages : piMessages,
+    source: 'pi',
+  };
+}
+
+function sessionIdsSharingPiPath(piSessionPath, ignoredId = null) {
+  const key = piPathKey(piSessionPath);
+  if (!key) return [];
+  return Object.entries(getSessions())
+    .filter(([id, session]) => id !== ignoredId && piPathKey(session.piSessionPath) === key)
+    .map(([id]) => id);
+}
+
+function coalescePiSessionDuplicates(canonicalId) {
+  const sessions = getSessions();
+  const canonical = sessions[canonicalId];
+  const key = piPathKey(canonical?.piSessionPath);
+  if (!key) return false;
+
+  let changed = false;
+  Object.entries(sessions).forEach(([id, session]) => {
+    if (id === canonicalId || piPathKey(session.piSessionPath) !== key) return;
+    const canonicalMessages = canonical.messages || [];
+    const otherMessages = session.messages || [];
+    if (otherMessages.length > canonicalMessages.length && canonical.status !== 'running') {
+      canonical.messages = otherMessages;
+    }
+    if (!canonical.customTitle && session.customTitle) canonical.customTitle = session.customTitle;
+    if (!canonical.title || canonical.title === '新 Agent 会话') canonical.title = session.title || canonical.title;
+    if (getActiveId() === id) setActiveId(canonicalId);
+    delete sessions[id];
+    changed = true;
+  });
+  if (changed) saveSessions(sessions);
+  return changed;
+}
+
 async function syncPiProjectSessions(projectId = getActiveProjectId(), force = false) {
   if (!USE_DATABASE || !projectId) return false;
   if (!force && syncedPiProjects.has(projectId)) return false;
@@ -1634,7 +1712,16 @@ async function syncPiProjectSessions(projectId = getActiveProjectId(), force = f
   const pathToId = new Map();
   Object.entries(sessions).forEach(([id, session]) => {
     const key = piPathKey(session.piSessionPath);
-    if (key) pathToId.set(key, id);
+    if (!key) return;
+    const currentId = pathToId.get(key);
+    const current = currentId ? sessions[currentId] : null;
+    const currentRunning = currentId ? !!getSessionFlight(AGENT_SCOPE, currentId) || current?.status === 'running' : false;
+    const nextRunning = !!getSessionFlight(AGENT_SCOPE, id) || session?.status === 'running';
+    const currentMessageCount = (current?.messages || []).length;
+    const nextMessageCount = (session?.messages || []).length;
+    if (!currentId || (nextRunning && !currentRunning) || (!currentRunning && nextMessageCount > currentMessageCount)) {
+      pathToId.set(key, id);
+    }
   });
 
   const seenPiPaths = new Set();
@@ -1643,18 +1730,14 @@ async function syncPiProjectSessions(projectId = getActiveProjectId(), force = f
     const key = piPathKey(piSession.piSessionPath);
     if (!key) return;
     seenPiPaths.add(key);
-    const existingId = pathToId.get(key) || (sessions[piSession.id] ? piSession.id : null);
+    const existingId = findLocalSessionForPiSession(sessions, piSession, projectId, pathToId);
     if (existingId) {
-      sessions[existingId] = {
-        ...sessions[existingId],
-        ...piSession,
-        id: existingId,
-        title: sessions[existingId].customTitle || piSession.title || sessions[existingId].title,
-        customTitle: sessions[existingId].customTitle || '',
-        source: 'pi',
-      };
+      sessions[existingId] = mergePiSessionIntoLocalSession(sessions[existingId], piSession, existingId);
+      pathToId.set(key, existingId);
+      coalescePiSessionDuplicates(existingId);
     } else {
       sessions[piSession.id] = piSession;
+      pathToId.set(key, piSession.id);
     }
     changed = true;
   });
@@ -1770,7 +1853,8 @@ async function deleteSessionWithPiOption(id) {
   const piSessionPath = getSessionKind(session) === AGENT_SCOPE ? session.piSessionPath : '';
 
   let deletedPiSession = false;
-  if (piSessionPath && USE_DATABASE) {
+  const sharedPiSessionIds = sessionIdsSharingPiPath(piSessionPath, id);
+  if (piSessionPath && USE_DATABASE && sharedPiSessionIds.length === 0) {
     try {
       await deletePiSessionFile(piSessionPath);
       deletedPiSession = true;

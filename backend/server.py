@@ -883,17 +883,38 @@ def load_custom_pi_models():
     return models
 
 
+def expand_home_path(path):
+    raw = str(path or "")
+    if raw == "~":
+        return Path.home()
+    if raw.startswith("~/") or raw.startswith("~\\"):
+        return Path.home() / raw[2:]
+    return Path(raw).expanduser()
+
+
+def default_pi_agent_dir():
+    return Path.home() / ".pi" / "agent"
+
+
 def pi_agent_dir():
-    return Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi" / "agent")).expanduser()
+    return expand_home_path(os.environ.get("PI_CODING_AGENT_DIR") or default_pi_agent_dir())
 
 
 def load_pi_settings():
-    settings_path = pi_agent_dir() / "settings.json"
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}, settings_path
-    return settings if isinstance(settings, dict) else {}, settings_path
+    candidates = [pi_agent_dir() / "settings.json"]
+    default_settings_path = default_pi_agent_dir() / "settings.json"
+    if default_settings_path != candidates[0]:
+        candidates.append(default_settings_path)
+
+    for settings_path in candidates:
+        try:
+            settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, json.JSONDecodeError):
+            return {}, settings_path
+        return settings if isinstance(settings, dict) else {}, settings_path
+    return {}, candidates[0]
 
 
 def load_enabled_pi_models():
@@ -1129,7 +1150,7 @@ def configured_skill_roots():
         raw = os.path.expandvars(str(entry or "").strip().strip("\"'"))
         if not raw:
             continue
-        candidate = Path(raw).expanduser()
+        candidate = expand_home_path(raw)
         if not candidate.is_absolute():
             candidate = (settings_path.parent / candidate).resolve(strict=False)
         roots.append((candidate, "settings.json skills", True))
