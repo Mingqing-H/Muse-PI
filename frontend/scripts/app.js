@@ -2088,15 +2088,20 @@ function renderReferencePicker(status = '') {
 
   // Attach button event handlers
   list.querySelectorAll('.reference-option').forEach(button => {
+    const selectButtonItem = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const index = Number(button.dataset.index || 0);
+      referencePickerState.activeIndex = index;
+      const item = referencePickerState.items[index];
+      if (item) insertReferenceItem(item);
+    };
     button.onmouseenter = () => {
       referencePickerState.activeIndex = Number(button.dataset.index || 0);
       renderReferencePicker();
     };
-    button.onmousedown = event => {
-      event.preventDefault();
-      const item = referencePickerState.items[Number(button.dataset.index || 0)];
-      if (item) insertReferenceItem(item);
-    };
+    button.onpointerdown = selectButtonItem;
+    button.onclick = selectButtonItem;
   });
 
   // scroll active item into view so keyboard navigation follows selection
@@ -2141,10 +2146,9 @@ async function updateReferencePicker({ force = false } = {}) {
 
 function insertReferenceItem(item) {
   const start = referencePickerState.tokenStart;
-  const end = getCaret();
+  const end = Math.max(start, referencePickerState.tokenEnd ?? getCaret());
   const value = getInputText();
   setInputText(value.slice(0, start) + item.insertText + value.slice(end));
-  const caret = start + item.insertText.length;
   setCaret(start + item.insertText.length);
   closeReferencePicker();
   inputEl.focus();
