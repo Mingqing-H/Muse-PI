@@ -1664,6 +1664,14 @@ body {
   padding: 2px 0;
 }
 
+.msg.bot .bubble th mjx-container,
+.msg.bot .bubble td mjx-container {
+  max-width: none;
+  min-width: max-content;
+  overflow: visible;
+  padding: 0;
+}
+
 .msg.bot .bubble .math-block {
   display: block;
   max-width: 100%;
