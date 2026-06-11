@@ -635,7 +635,7 @@ function renderModelOptions(activeIndex = activePresetIndex) {
     btn.classList.toggle('active', enabledModelDraft.includes(model));
     btn.textContent = model;
     btn.title = enabledModelDraft.includes(model) ? '已启用，点击停用' : '点击启用';
-    btn.onclick = async () => {
+    btn.onclick = () => {
       if (enabledModelDraft.includes(model)) {
         if (enabledModelDraft.length <= 1) {
           showToast('至少保留一个启用模型', 'var(--rose)');
@@ -647,10 +647,7 @@ function renderModelOptions(activeIndex = activePresetIndex) {
       }
       syncModelDraftValue();
       renderModelOptions(activeIndex);
-      if (activeConfigScope === CHAT_SCOPE) {
-        const saved = await saveConfig({ silent: true });
-        if (saved) showToast('启用模型已保存', 'var(--accent)');
-      }
+      showToast('模型选择已更新，点击保存配置后生效', 'var(--muted)');
     };
     wrap.appendChild(btn);
   });
