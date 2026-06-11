@@ -715,28 +715,22 @@ body {
   font-size: 11px;
 }
 
-.cli-path-status div {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 10px;
-  align-items: baseline;
-}
-
-.cli-path-status div + div {
-  margin-top: 6px;
-}
-
-.cli-path-status span {
-  color: var(--muted);
-  font-weight: 600;
-}
-
-.cli-path-status code {
-  min-width: 0;
+.cli-path-use {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  background: var(--surface);
   color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  overflow-wrap: anywhere;
+  font-size: 11px;
+  cursor: pointer;
+  transition: border-color 0.25s, background 0.25s, color 0.25s;
+}
+
+.cli-path-use:hover {
+  border-color: var(--accent);
+  background: var(--surface-lift);
+  color: var(--fg-cream);
 }
 
 .input-wrap { position: relative; }

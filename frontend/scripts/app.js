@@ -433,16 +433,17 @@ function isAgentWorkspace() {
 function syncProviderFields(activeIndex) {
   const preset = PRESETS[activeIndex];
   const isCli = preset?.kind === 'cli';
-  if ($('apiUrlLabel')) $('apiUrlLabel').innerHTML = isCli ? 'Pi CLI 本地路径 <span class="hint">&mdash; 留空自动识别 pi</span>' : 'API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span>';
+  if ($('apiUrlLabel')) $('apiUrlLabel').innerHTML = isCli ? 'Pi CLI 本地路径 <span class="hint">&mdash; 可留空使用自动识别</span>' : 'API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span>';
   if ($('apiKeyLabel')) $('apiKeyLabel').textContent = 'API Key';
   if ($('modelNameLabel')) $('modelNameLabel').style.display = isCli ? 'none' : '';
-  if ($('apiUrl')) $('apiUrl').placeholder = isCli ? '留空自动识别，或填写 D:\\npm-global\\pi.cmd' : 'https://api.openai.com/v1/chat/completions';
+  if ($('apiUrl')) $('apiUrl').placeholder = isCli ? '留空即可自动识别' : 'https://api.openai.com/v1/chat/completions';
   if ($('apiKey')) $('apiKey').placeholder = 'sk-...';
   if ($('modelName')) $('modelName').placeholder = isCli ? 'default' : 'gpt-4o';
   const keyField = $('apiKey')?.closest('.field');
   if (keyField) keyField.classList.toggle('hidden', isCli);
   if (isCli && $('apiKey')) $('apiKey').value = '';
   updatePiCliPathStatus();
+  if (isCli) refreshPiCliInfo();
 }
 
 function isAutoPiCommand(value) {
@@ -461,19 +462,28 @@ function updatePiCliPathStatus() {
   const status = $('piCliPathStatus');
   if (!status) return;
   const isCli = activePresetIndex >= 0 && PRESETS[activePresetIndex]?.kind === 'cli';
-  status.style.display = isCli ? '' : 'none';
+  status.style.display = isCli ? 'block' : 'none';
   if (!isCli) return;
 
   const rawConfigured = $('apiUrl')?.value.trim() || '';
   const configured = isAutoPiCommand(rawConfigured) ? '' : rawConfigured;
   const detected = piCliInfo?.detectedPath || '';
-  const executable = configured || detected || '未找到 pi';
-  const command = configured ? normalizePiCommandPreview(configured) : (piCliInfo?.command || 'pi -p {prompt}');
   status.innerHTML = `
-    <div><span>自动识别</span><code>${escapeHtml(detected || '未找到，请手动填写 pi.cmd 路径')}</code></div>
-    <div><span>当前使用</span><code>${escapeHtml(executable)}</code></div>
-    <div><span>执行命令</span><code>${escapeHtml(command)}</code></div>
+    <button type="button" class="cli-path-use" id="useDetectedPiPath">填入自动识别路径</button>
   `;
+  const useDetectedBtn = $('useDetectedPiPath');
+  if (useDetectedBtn) {
+    useDetectedBtn.onclick = () => {
+      const detectedPath = piCliInfo?.detectedPath || '';
+      if (!detectedPath) {
+        showToast('没有自动识别到 pi.cmd，请手动填写路径', 'var(--rose)');
+        return;
+      }
+      $('apiUrl').value = detectedPath;
+      updatePiCliPathStatus();
+      showToast('已填入自动识别的 Pi CLI 路径', 'var(--accent)');
+    };
+  }
 }
 
 async function refreshPiCliInfo() {

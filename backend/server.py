@@ -672,10 +672,63 @@ def split_command(command):
 def resolve_command_args(args):
     if not args:
         return args
+    if args[0].lower() in {"pi", "pi.cmd"}:
+        resolved_pi = find_pi_cli_executable()
+        if resolved_pi:
+            return [resolved_pi, *args[1:]]
     resolved = shutil.which(args[0])
     if resolved:
         return [resolved, *args[1:]]
     return args
+
+
+def candidate_pi_cli_paths():
+    names = ["pi.cmd", "pi.exe", "pi"]
+    dirs = []
+
+    def add_dir(value):
+        if not value:
+            return
+        path = Path(value).expanduser()
+        if path not in dirs:
+            dirs.append(path)
+
+    for env_name in ("NPM_CONFIG_PREFIX", "npm_config_prefix"):
+        add_dir(os.environ.get(env_name))
+    for part in os.environ.get("PATH", "").split(os.pathsep):
+        add_dir(part)
+
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        add_dir(Path(appdata) / "npm")
+    program_data = os.environ.get("ProgramData")
+    if program_data:
+        add_dir(Path(program_data) / "npm")
+    for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(env_name)
+        if root:
+            add_dir(Path(root) / "nodejs")
+
+    add_dir(Path.home() / "AppData" / "Roaming" / "npm")
+    for drive in "CDEFG":
+        add_dir(f"{drive}:\\npm-global")
+
+    for directory in dirs:
+        for name in names:
+            yield directory / name
+
+
+def find_pi_cli_executable():
+    detected = shutil.which("pi") or shutil.which("pi.cmd")
+    if detected:
+        return detected
+    for candidate in candidate_pi_cli_paths():
+        try:
+            if candidate.is_file():
+                return str(candidate)
+        except OSError:
+            continue
+    return ""
 
 
 def normalize_pi_command(command):
@@ -692,7 +745,7 @@ def normalize_pi_command(command):
 def inspect_pi_cli(command=""):
     normalized = normalize_pi_command(command)
     args = resolve_command_args(split_command(normalized))
-    detected_path = shutil.which("pi") or shutil.which("pi.cmd")
+    detected_path = find_pi_cli_executable()
     return {
         "detectedPath": detected_path or "",
         "configuredPath": (command or "").strip(),
