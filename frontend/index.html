@@ -103,25 +103,29 @@
       <div class="config-scope-tabs">
         <button class="config-scope-btn active" data-scope="chat">对话模型</button>
         <button class="config-scope-btn" data-scope="agent">Agent 模型</button>
+        <button class="config-scope-btn" data-scope="backgrounds">背景图片</button>
       </div>
-      <div class="presets" id="presets"></div>
-      <div class="field">
-        <label id="apiUrlLabel">API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span></label>
-        <input type="text" id="apiUrl" placeholder="https://api.openai.com/v1/chat/completions" spellcheck="false">
-        <div class="cli-path-status" id="piCliPathStatus"></div>
-      </div>
-      <div class="field">
-        <label id="apiKeyLabel">API Key</label>
-        <div class="input-wrap">
-          <input type="password" id="apiKey" placeholder="sk-..." spellcheck="false" autocomplete="off">
-          <button class="toggle-vis" id="toggleKey" title="Show / hide">&#9675;</button>
+      <div class="config-model-panel" id="configModelPanel">
+        <div class="presets" id="presets"></div>
+        <div class="field">
+          <label id="apiUrlLabel">API 地址 <span class="hint">&mdash; OpenAI 兼容格式</span></label>
+          <input type="text" id="apiUrl" placeholder="https://api.openai.com/v1/chat/completions" spellcheck="false">
+          <div class="cli-path-status" id="piCliPathStatus"></div>
+        </div>
+        <div class="field">
+          <label id="apiKeyLabel">API Key</label>
+          <div class="input-wrap">
+            <input type="password" id="apiKey" placeholder="sk-..." spellcheck="false" autocomplete="off">
+            <button class="toggle-vis" id="toggleKey" title="Show / hide">&#9675;</button>
+          </div>
+        </div>
+        <div class="field">
+          <label id="modelNameLabel">启用模型</label>
+          <input type="hidden" id="modelName">
+          <div class="model-options" id="modelOptions"></div>
         </div>
       </div>
-      <div class="field">
-        <label id="modelNameLabel">启用模型</label>
-        <input type="hidden" id="modelName">
-        <div class="model-options" id="modelOptions"></div>
-      </div>
+      <div class="background-config-panel hidden" id="backgroundConfigPanel"></div>
       <div class="actions">
         <button class="btn btn-primary" id="saveBtn">保存配置</button>
         <button class="btn btn-secondary" id="clearBtn">清除</button>

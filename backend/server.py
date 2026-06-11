@@ -283,10 +283,11 @@ def normalize_enabled_models(config):
 
 def normalize_config_store(config):
     if not config:
-        return {"activeChatProvider": None, "activeAgentProvider": None, "providers": {}}
+        return {"activeChatProvider": None, "activeAgentProvider": None, "providers": {}, "backgrounds": {}}
 
     if isinstance(config, dict) and isinstance(config.get("providers"), dict):
         providers = config.get("providers") or {}
+        backgrounds = config.get("backgrounds") if isinstance(config.get("backgrounds"), dict) else {}
         active_provider = config.get("activeProvider")
         active_chat_provider = config.get("activeChatProvider")
         active_agent_provider = config.get("activeAgentProvider")
@@ -302,6 +303,7 @@ def normalize_config_store(config):
             "activeChatProvider": active_chat_provider,
             "activeAgentProvider": active_agent_provider,
             "providers": providers,
+            "backgrounds": backgrounds,
         }
 
     if isinstance(config, dict) and any(config.get(k) for k in ("apiUrl", "apiKey", "modelName")):
@@ -310,6 +312,7 @@ def normalize_config_store(config):
         return {
             "activeChatProvider": None if is_agent_provider else provider,
             "activeAgentProvider": provider if is_agent_provider else None,
+            "backgrounds": config.get("backgrounds") if isinstance(config.get("backgrounds"), dict) else {},
             "providers": {
                 provider: {
                     "provider": provider,
@@ -321,7 +324,7 @@ def normalize_config_store(config):
             },
         }
 
-    return {"activeChatProvider": None, "activeAgentProvider": None, "providers": {}}
+    return {"activeChatProvider": None, "activeAgentProvider": None, "providers": {}, "backgrounds": {}}
 
 
 def save_config(conn, config):
@@ -331,6 +334,7 @@ def save_config(conn, config):
     set_meta(conn, "active_chat_provider", store.get("activeChatProvider"))
     set_meta(conn, "active_agent_provider", store.get("activeAgentProvider"))
     set_meta(conn, "active_provider", store.get("activeChatProvider") or store.get("activeAgentProvider"))
+    set_meta(conn, "backgrounds", store.get("backgrounds") or {})
 
     if isinstance(config, dict) and isinstance(config.get("providers"), dict):
         incoming_providers = set(store["providers"].keys())
@@ -405,16 +409,19 @@ def load_config(conn):
         active_chat_provider = next((name for name in providers if name != "Pi CLI"), None)
     if active_agent_provider not in providers:
         active_agent_provider = "Pi CLI" if "Pi CLI" in providers else None
-    return {
+    backgrounds = get_meta(conn, "backgrounds", {})
+    result = {
         "activeChatProvider": active_chat_provider,
         "activeAgentProvider": active_agent_provider,
         "providers": providers,
-    } if providers else None
+        "backgrounds": backgrounds if isinstance(backgrounds, dict) else {},
+    }
+    return result if providers or result["backgrounds"] else None
 
 
 def clear_config(conn):
     conn.execute("DELETE FROM model_provider_configs")
-    delete_meta(conn, "active_provider", "active_chat_provider", "active_agent_provider")
+    delete_meta(conn, "active_provider", "active_chat_provider", "active_agent_provider", "backgrounds")
 
 
 def require_project_folder_path(path):

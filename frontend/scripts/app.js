@@ -11,6 +11,13 @@
 const PI_MODEL_OPTIONS = PRESETS.find(p => p.name === 'Pi CLI')?.models || ['default'];
 const CHAT_SCOPE = 'chat';
 const AGENT_SCOPE = 'agent';
+const BACKGROUND_SCOPE = 'backgrounds';
+const BACKGROUND_SLOTS = [
+  { key: 'projects', label: '项目', hint: '项目列表背景', viewId: 'projectsView' },
+  { key: 'chat', label: '对话', hint: '普通对话背景', viewId: 'chatView' },
+  { key: 'agent', label: 'Agent', hint: 'Agent 会话背景', viewId: 'chatView' },
+  { key: 'config', label: '配置', hint: '配置页背景', viewId: 'configView' },
+];
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'];
 const IMAGE_EXT_PATTERN = IMAGE_EXTENSIONS.join('|');
 
@@ -99,6 +106,7 @@ async function loadDatabaseState() {
     try { sessionsCache = JSON.parse(localStorage.getItem(SESSIONS_KEY)) || {}; } catch { sessionsCache = {}; }
     activeIdCache = localStorage.getItem(ACTIVE_KEY) || null;
     ensureDefaultProject();
+    applyCustomBackgrounds();
     return;
   }
 
@@ -112,6 +120,7 @@ async function loadDatabaseState() {
 
   await migrateLocalStorageState();
   ensureDefaultProject();
+  applyCustomBackgrounds();
 }
 
 async function migrateLocalStorageState() {
@@ -336,6 +345,7 @@ document.querySelectorAll('.tab-btn').forEach(b => {
       clearWorkspaceUnread(tab);
       await refreshChat();
     }
+    applyCustomBackgrounds();
     if (tab === 'config') $('configView').scrollTop = 0;
     updateSendButtonState();
     renderTabUnread();
@@ -346,6 +356,7 @@ document.querySelectorAll('.tab-btn').forEach(b => {
 const presetsEl = $('presets');
 
 function presetIndicesForScope(scope = activeConfigScope) {
+  if (scope === BACKGROUND_SCOPE) return [];
   return PRESETS
     .map((preset, index) => ({ preset, index }))
     .filter(({ preset }) => scope === AGENT_SCOPE ? preset.kind === 'cli' : preset.kind !== 'cli')
@@ -353,6 +364,7 @@ function presetIndicesForScope(scope = activeConfigScope) {
 }
 
 function renderPresets() {
+  if (activeConfigScope === BACKGROUND_SCOPE) return;
   presetsEl.innerHTML = '';
   const store = toConfigStore(configCache);
   presetIndicesForScope().forEach(i => {
@@ -377,8 +389,23 @@ function setConfigScope(scope) {
   document.querySelectorAll('.config-scope-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.scope === scope);
   });
-  if ($('configHeaderTitle')) $('configHeaderTitle').innerHTML = scope === AGENT_SCOPE ? 'Agent <em>配置</em>' : '对话 <em>配置</em>';
-  if ($('configHeaderText')) $('configHeaderText').textContent = scope === AGENT_SCOPE ? '配置用于本地项目操作的 Pi Agent' : '配置用于普通对话的 API 模型';
+  const isBackgroundScope = scope === BACKGROUND_SCOPE;
+  if ($('configModelPanel')) $('configModelPanel').classList.toggle('hidden', isBackgroundScope);
+  if ($('backgroundConfigPanel')) $('backgroundConfigPanel').classList.toggle('hidden', !isBackgroundScope);
+  if ($('configHeaderTitle')) {
+    $('configHeaderTitle').innerHTML = isBackgroundScope
+      ? '背景 <em>配置</em>'
+      : scope === AGENT_SCOPE ? 'Agent <em>配置</em>' : '对话 <em>配置</em>';
+  }
+  if ($('configHeaderText')) {
+    $('configHeaderText').textContent = isBackgroundScope
+      ? '为项目、对话、Agent 和配置页选择自定义背景'
+      : scope === AGENT_SCOPE ? '配置用于本地项目操作的 Pi Agent' : '配置用于普通对话的 API 模型';
+  }
+  if (isBackgroundScope) {
+    renderBackgroundConfig();
+    return;
+  }
   renderPresets();
   loadConfig();
 }
@@ -506,6 +533,7 @@ function toConfigStore(config) {
   if (isConfigStore(config)) {
     const activeProvider = config.activeProvider || null;
     const providers = config.providers || {};
+    const backgrounds = config.backgrounds && typeof config.backgrounds === 'object' ? config.backgrounds : {};
     const activeChatProvider = config.activeChatProvider
       || (activeProvider && !isCliProviderName(activeProvider) ? activeProvider : null)
       || Object.keys(providers).find(name => !isCliProviderName(name))
@@ -518,6 +546,7 @@ function toConfigStore(config) {
       activeChatProvider,
       activeAgentProvider,
       providers,
+      backgrounds,
     };
   }
 
@@ -528,13 +557,14 @@ function toConfigStore(config) {
     return {
       activeChatProvider: isCli ? null : provider,
       activeAgentProvider: isCli ? provider : null,
+      backgrounds: config.backgrounds && typeof config.backgrounds === 'object' ? config.backgrounds : {},
       providers: {
         [provider]: { ...config, provider },
       },
     };
   }
 
-  return { activeChatProvider: null, activeAgentProvider: null, providers: {} };
+  return { activeChatProvider: null, activeAgentProvider: null, providers: {}, backgrounds: {} };
 }
 
 function getProviderConfig(index) {
@@ -655,6 +685,123 @@ function renderModelOptions(activeIndex = activePresetIndex) {
   });
 }
 
+function safeCssUrl(value) {
+  const url = String(value || '');
+  return url.replace(/["\\\n\r]/g, '');
+}
+
+function getBackgrounds() {
+  return toConfigStore(configCache).backgrounds || {};
+}
+
+function chatBackgroundKey() {
+  return isAgentWorkspace() ? 'agent' : 'chat';
+}
+
+function setViewBackground(viewId, image, layer = 'plain') {
+  const view = $(viewId);
+  if (!view) return;
+  if (!image) {
+    view.style.removeProperty('background');
+    view.style.removeProperty('background-image');
+    view.style.removeProperty('background-position');
+    view.style.removeProperty('background-size');
+    view.style.removeProperty('background-repeat');
+    return;
+  }
+  const url = `url("${safeCssUrl(image)}")`;
+  if (layer === 'projects') {
+    view.style.background = `linear-gradient(180deg, oklch(11% 0.04 205 / 0.82), oklch(14% 0.04 150 / 0.86)), ${url} center center / cover no-repeat`;
+    return;
+  }
+  view.style.background = `${url} center center / cover no-repeat`;
+}
+
+function applyCustomBackgrounds() {
+  const backgrounds = getBackgrounds();
+  setViewBackground('projectsView', backgrounds.projects, 'projects');
+  setViewBackground('configView', backgrounds.config);
+  setViewBackground('chatView', backgrounds[chatBackgroundKey()]);
+}
+
+function getBackgroundDraft() {
+  const store = toConfigStore(configCache);
+  store.backgrounds = store.backgrounds && typeof store.backgrounds === 'object' ? store.backgrounds : {};
+  configCache = store;
+  return store.backgrounds;
+}
+
+function readImageAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !file.type.startsWith('image/')) {
+      reject(new Error('请选择图片文件'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('图片读取失败'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function renderBackgroundConfig() {
+  const panel = $('backgroundConfigPanel');
+  if (!panel) return;
+  const backgrounds = getBackgrounds();
+  panel.innerHTML = '';
+  BACKGROUND_SLOTS.forEach(slot => {
+    const value = backgrounds[slot.key] || '';
+    const item = document.createElement('div');
+    item.className = 'background-slot';
+    item.innerHTML = `
+      <div class="background-preview ${value ? '' : 'empty'}" data-slot="${escapeHtml(slot.key)}">
+        ${value ? `<img src="${escapeHtml(value)}" alt="${escapeHtml(slot.label)}背景预览">` : '<span>默认</span>'}
+      </div>
+      <div class="background-slot-main">
+        <div class="background-slot-title">${escapeHtml(slot.label)}</div>
+        <div class="background-slot-hint">${escapeHtml(value ? '已选择自定义图片' : slot.hint)}</div>
+      </div>
+      <div class="background-slot-actions">
+        <button type="button" class="background-choose" data-slot="${escapeHtml(slot.key)}">选择</button>
+        <button type="button" class="background-reset" data-slot="${escapeHtml(slot.key)}"${value ? '' : ' disabled'}>默认</button>
+      </div>
+    `;
+    panel.appendChild(item);
+  });
+
+  panel.querySelectorAll('.background-choose').forEach(btn => {
+    btn.onclick = () => {
+      const slot = btn.dataset.slot;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = 'image/*';
+      input.onchange = async () => {
+        try {
+          const image = await readImageAsDataUrl(input.files?.[0]);
+          const backgrounds = getBackgroundDraft();
+          backgrounds[slot] = image;
+          renderBackgroundConfig();
+          applyCustomBackgrounds();
+          showToast('背景已预览，点击保存配置后生效', 'var(--muted)');
+        } catch (err) {
+          showToast(err.message || '图片读取失败', 'var(--rose)');
+        }
+      };
+      input.click();
+    };
+  });
+
+  panel.querySelectorAll('.background-reset').forEach(btn => {
+    btn.onclick = () => {
+      const backgrounds = getBackgroundDraft();
+      delete backgrounds[btn.dataset.slot];
+      renderBackgroundConfig();
+      applyCustomBackgrounds();
+      showToast('已恢复默认背景，点击保存配置后生效', 'var(--muted)');
+    };
+  });
+}
+
 function loadConfig() {
   configCache = toConfigStore(configCache);
   const c = getActiveProviderConfig();
@@ -689,6 +836,20 @@ function getConfig(scope = activeWorkspace) { return getSessionScopedConfig(scop
 
 async function saveConfig(options = {}) {
   const silent = options?.silent === true;
+  if (activeConfigScope === BACKGROUND_SCOPE) {
+    configCache = toConfigStore(configCache);
+    try {
+      await persistConfig();
+      applyCustomBackgrounds();
+      renderBackgroundConfig();
+      if (!silent) showToast('背景配置已保存', 'var(--accent)');
+      return true;
+    } catch (err) {
+      console.error(err);
+      showToast('背景配置保存失败', 'var(--rose)');
+      return false;
+    }
+  }
   syncModelDraftValue();
   const c = {
     apiUrl: $('apiUrl').value.trim(),
@@ -740,12 +901,25 @@ async function saveConfig(options = {}) {
 
 $('saveBtn').onclick = () => saveConfig();
 $('clearBtn').onclick = () => {
+  if (activeConfigScope === BACKGROUND_SCOPE) {
+    const store = toConfigStore(configCache);
+    store.backgrounds = {};
+    configCache = store;
+    persistConfig().catch(err => {
+      console.error(err);
+      showToast('背景配置清除失败', 'var(--rose)');
+    });
+    renderBackgroundConfig();
+    applyCustomBackgrounds();
+    showToast('已恢复默认背景', 'var(--muted)');
+    return;
+  }
   const store = toConfigStore(configCache);
   const provider = providerNameForIndex(activePresetIndex);
   delete store.providers[provider];
   if (activeConfigScope === AGENT_SCOPE) store.activeAgentProvider = null;
   else store.activeChatProvider = null;
-  configCache = Object.keys(store.providers).length ? store : null;
+  configCache = Object.keys(store.providers).length || Object.keys(store.backgrounds || {}).length ? store : null;
   if (configCache) persistConfig();
   else clearPersistedConfig();
   enabledModelDraft = [];
