@@ -544,6 +544,26 @@ function getScopedConfig(scope = activeWorkspace) {
   return store.providers[provider] || null;
 }
 
+function getSessionScopedConfig(scope = activeWorkspace, sessionId = getActiveId()) {
+  const base = getScopedConfig(scope);
+  if (!base) return null;
+  const session = getSessionById(sessionId);
+  if (session && getSessionKind(session) !== scope) return base;
+  const modelName = (session?.modelName || '').trim();
+  if (!modelName) return base;
+
+  if (scope === AGENT_SCOPE) {
+    return { ...base, provider: base.provider || 'Pi CLI', modelName };
+  }
+
+  const store = toConfigStore(configCache);
+  const provider = (session?.modelProvider || base.provider || '').trim();
+  const providerConfig = provider && !isCliProviderName(provider) && store.providers[provider]
+    ? store.providers[provider]
+    : base;
+  return { ...providerConfig, provider: providerConfig.provider || provider, modelName };
+}
+
 function syncPresetSelection(activeIndex) {
   document.querySelectorAll('.preset-btn').forEach(b => b.classList.toggle('active', Number(b.dataset.index) === activeIndex));
 }
@@ -656,7 +676,7 @@ function loadConfig() {
   return c;
 }
 
-function getConfig(scope = activeWorkspace) { return getScopedConfig(scope); }
+function getConfig(scope = activeWorkspace) { return getSessionScopedConfig(scope); }
 
 async function saveConfig(options = {}) {
   const silent = options?.silent === true;
@@ -779,10 +799,20 @@ function setAgentModelName(modelName) {
     apiKey: '',
     modelName: 'default',
   };
-  store.activeAgentProvider = provider;
-  store.providers[provider] = { ...existing, provider, apiKey: '', modelName: model };
-  configCache = store;
-  persistConfig();
+  if (!store.providers[provider]) {
+    store.providers[provider] = { ...existing, provider, apiKey: '', modelName: 'default' };
+    configCache = store;
+    persistConfig();
+  }
+  const session = getActiveSession();
+  if (session && getSessionKind(session) === AGENT_SCOPE) {
+    updateSessionById(getActiveId(), { modelProvider: provider, modelName: model });
+  } else {
+    store.activeAgentProvider = provider;
+    store.providers[provider] = { ...existing, provider, apiKey: '', modelName: model };
+    configCache = store;
+    persistConfig();
+  }
   updateModelBadge();
   updateAgentModelPicker();
   showToast(`Agent 模型已切换为 ${model}`, 'var(--accent)');
@@ -811,10 +841,15 @@ function setChatModelName(providerName, modelName) {
   const preset = PRESETS[getPresetIndexForProviderName(provider)];
   const enabledModels = getEnabledModelsForConfig(store.providers[provider], preset);
   if (!enabledModels.includes(model)) return;
-  store.activeChatProvider = provider;
-  store.providers[provider] = { ...store.providers[provider], modelName: model, enabledModels };
-  configCache = store;
-  persistConfig();
+  const session = getActiveSession();
+  if (session && getSessionKind(session) === CHAT_SCOPE) {
+    updateSessionById(getActiveId(), { modelProvider: provider, modelName: model });
+  } else {
+    store.activeChatProvider = provider;
+    store.providers[provider] = { ...store.providers[provider], modelName: model, enabledModels };
+    configCache = store;
+    persistConfig();
+  }
   updateModelBadge();
   updateAgentModelPicker();
   showToast(`对话模型已切换为 ${provider} · ${model}`, 'var(--accent)');
@@ -970,8 +1005,9 @@ function updateAgentModelPicker() {
   const chatModel = getConfig(CHAT_SCOPE)?.modelName || '未配置';
   const model = isAgentWorkspace() ? getAgentModelName() : chatModel;
   label.textContent = model;
-  trigger.disabled = isActiveSessionStreaming(activeWorkspace);
-  trigger.title = isAgentWorkspace() ? `Pi Agent 模型：${model}` : `选择对话模型：${model}`;
+  trigger.disabled = false;
+  const runningHint = isWorkspaceStreaming(activeWorkspace) ? '，正在回复的会话仍使用发起时的模型' : '';
+  trigger.title = (isAgentWorkspace() ? `Pi Agent 模型：${model}` : `选择对话模型：${model}`) + runningHint;
   if (picker.classList.contains('open')) renderAgentModelMenu();
 }
 
@@ -1685,6 +1721,7 @@ function switchSession(id) {
   renderSessionList();
   renderMessages();
   updateSendButtonState();
+  updateAgentModelPicker();
 }
 
 function renderSessionList() {
@@ -3276,6 +3313,8 @@ async function sendMessage() {
   session.projectId = requestIsAgent ? (session.projectId || getActiveProjectId()) : null;
   session.mode = requestIsAgent ? 'task' : 'chat';
   session.status = 'running';
+  session.modelProvider = cfg.provider || (requestIsAgent ? 'Pi CLI' : session.modelProvider || '');
+  session.modelName = cfg.modelName || session.modelName || '';
 
   const requestSessionId = getActiveId();
   const requestProjectId = session.projectId;
@@ -3291,6 +3330,8 @@ async function sendMessage() {
     projectId: session.projectId,
     mode: session.mode,
     status: session.status,
+    modelProvider: session.modelProvider,
+    modelName: session.modelName,
     messages: session.messages,
   };
   if (session.messages.filter(m => m.role === 'user').length === 1 && !session.customTitle) {
