@@ -907,6 +907,62 @@ def load_enabled_pi_models():
     return models
 
 
+def normalize_pi_model_value(value):
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        provider = str(value.get("provider") or value.get("providerName") or "").strip()
+        model = str(value.get("model") or value.get("modelName") or value.get("id") or "").strip()
+        if provider and model and "/" not in model:
+            return f"{provider}/{model}"
+        return model
+    return ""
+
+
+def load_default_pi_model():
+    settings, _settings_path = load_pi_settings()
+    if not isinstance(settings, dict):
+        return ""
+
+    for key in ("defaultModel", "activeModel", "selectedModel", "currentModel", "modelName", "model"):
+        model = normalize_pi_model_value(settings.get(key))
+        if model and model != "default":
+            return model
+
+    for section_key in ("default", "defaults", "modelDefaults"):
+        section = settings.get(section_key)
+        if not isinstance(section, dict):
+            continue
+        for key in ("model", "modelName", "id"):
+            model = normalize_pi_model_value(section.get(key))
+            if model and model != "default":
+                provider = str(section.get("provider") or section.get("providerName") or "").strip()
+                if provider and "/" not in model:
+                    return f"{provider}/{model}"
+                return model
+
+    enabled = load_enabled_pi_models()
+    if len(enabled) == 1:
+        return enabled[0].get("value") or ""
+    return ""
+
+
+def parse_default_pi_model_from_output(output):
+    for raw_line in (output or "").splitlines():
+        line = ANSI_PATTERN.sub("", raw_line).strip()
+        if not line or "default" not in line.lower():
+            continue
+        cleaned = re.sub(r"^[*>\-\s]+", "", line)
+        cleaned = re.sub(r"\b(default|current|active|selected)\b", "", cleaned, flags=re.I).strip()
+        cleaned = re.sub(r"[()［］【】\[\]]", " ", cleaned).strip()
+        parts = cleaned.split()
+        if len(parts) >= 2 and parts[0].lower() not in {"provider", "warning:"}:
+            return f"{parts[0]}/{parts[1]}"
+        if len(parts) == 1 and "/" in parts[0]:
+            return parts[0]
+    return ""
+
+
 def list_pi_models(command=""):
     args = [*pi_command_base_args(command), "--list-models"]
     raw_output = ""
@@ -939,6 +995,7 @@ def list_pi_models(command=""):
 
     return {
         "models": merged,
+        "defaultModel": load_default_pi_model() or parse_default_pi_model_from_output(raw_output) or (merged[0].get("value") if len(merged) == 1 else ""),
         "error": error,
         "raw": raw_output,
         "args": args,

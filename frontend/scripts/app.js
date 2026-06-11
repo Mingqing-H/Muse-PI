@@ -35,6 +35,8 @@ let activeWorkspace = CHAT_SCOPE;
 let activeRunMode = 'chat';
 let piModelOptionsCache = null;
 let piModelOptionsError = '';
+let piDefaultModelName = '';
+let piModelOptionsLoading = false;
 let agentModelSearchValue = '';
 let enabledModelDraft = [];
 let skillOptionsCache = null;
@@ -784,15 +786,33 @@ function getAgentModelOptions() {
 }
 
 async function refreshPiModelOptions() {
-  if (!USE_DATABASE) return;
+  if (!USE_DATABASE || piModelOptionsLoading) return;
+  piModelOptionsLoading = true;
   try {
     const data = await apiRequest('/api/pi-models');
     piModelOptionsCache = Array.isArray(data.models) ? data.models : [];
+    piDefaultModelName = (data.defaultModel || '').trim();
     piModelOptionsError = data.error || (!piModelOptionsCache.length && data.raw ? data.raw.trim() : '');
   } catch (err) {
     console.error(err);
     piModelOptionsError = err.message || '模型列表读取失败';
+  } finally {
+    piModelOptionsLoading = false;
   }
+}
+
+function formatAgentModelLabel(modelName) {
+  const model = (modelName || '').trim() || 'default';
+  if (model !== 'default') return model;
+  const defaultModel = (piDefaultModelName || '').trim();
+  if (!defaultModel || defaultModel === 'default') return model;
+  return `default（${defaultModel}）`;
+}
+
+function getEffectiveAgentModelName(modelName) {
+  const model = (modelName || '').trim() || 'default';
+  const defaultModel = (piDefaultModelName || '').trim();
+  return model === 'default' && defaultModel && defaultModel !== 'default' ? defaultModel : model;
 }
 
 function setAgentModelName(modelName) {
@@ -909,7 +929,7 @@ function renderAgentModelMenu() {
   const query = agentModelSearchValue.trim().toLowerCase();
   const allOptions = getAgentModelOptions();
   const visibleOptions = query
-    ? allOptions.filter(model => model.toLowerCase().includes(query))
+    ? allOptions.filter(model => `${model} ${formatAgentModelLabel(model)}`.toLowerCase().includes(query))
     : allOptions;
   menu.innerHTML = '';
 
@@ -944,7 +964,8 @@ function renderAgentModelMenu() {
     btn.type = 'button';
     btn.className = 'agent-model-option';
     btn.classList.toggle('active', model === current);
-    btn.textContent = model;
+    btn.textContent = formatAgentModelLabel(model);
+    btn.title = model === 'default' ? `Pi CLI 默认模型：${formatAgentModelLabel(model)}` : model;
     btn.onpointerdown = event => {
       event.preventDefault();
       closeAgentModelMenu();
@@ -1011,10 +1032,14 @@ function updateAgentModelPicker() {
   if (!visible) closeAgentModelMenu();
   const chatModel = getConfig(CHAT_SCOPE)?.modelName || '未配置';
   const model = isAgentWorkspace() ? getAgentModelName() : chatModel;
-  label.textContent = model;
+  const displayModel = isAgentWorkspace() ? formatAgentModelLabel(model) : model;
+  label.textContent = displayModel;
   trigger.disabled = false;
+  if (isAgentWorkspace() && USE_DATABASE && piModelOptionsCache === null && !piModelOptionsLoading) {
+    refreshPiModelOptions().then(updateAgentModelPicker);
+  }
   const runningHint = isWorkspaceStreaming(activeWorkspace) ? '，正在回复的会话仍使用发起时的模型' : '';
-  trigger.title = (isAgentWorkspace() ? `Pi Agent 模型：${model}` : `选择对话模型：${model}`) + runningHint;
+  trigger.title = (isAgentWorkspace() ? `Pi Agent 模型：${displayModel}` : `选择对话模型：${model}`) + runningHint;
   if (picker.classList.contains('open')) renderAgentModelMenu();
 }
 
@@ -3418,6 +3443,9 @@ async function sendMessage() {
     };
 
     if (requestIsAgent) {
+      if (cfg.modelName === 'default' && USE_DATABASE && piModelOptionsCache === null && !piModelOptionsLoading) {
+        await refreshPiModelOptions();
+      }
       await readCliStream(
         text,
         messages,
@@ -3426,7 +3454,7 @@ async function sendMessage() {
           projectId: requestProjectId,
           piSessionPath: requestPiSessionPath,
           mode: requestRunMode,
-          modelName: cfg.modelName,
+          modelName: getEffectiveAgentModelName(cfg.modelName),
           signal: controller.signal,
         },
         onDelta,
