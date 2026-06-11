@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/依赖-零-8a8078?style=flat-square" alt="zero deps">
   <img src="https://img.shields.io/badge/构建-零步骤-c9a96e?style=flat-square" alt="zero build">
   <img src="https://img.shields.io/badge/许可-MIT-c9a96e?style=flat-square" alt="MIT">
-  <img src="https://img.shields.io/badge/版本-v1.0.0-1a1714?style=flat-square" alt="v1.0.0">
+  <img src="https://img.shields.io/badge/版本-v1.2.0-1a1714?style=flat-square" alt="v1.2.0">
 </p>
 
 ---
@@ -41,6 +41,8 @@ python backend/server.py
 
 Windows 用户直接双击 `start_server.bat`，连终端都不用开。
 
+> 端口 9000 被占用？不用管——服务器会自动清理旧进程并寻找下一个可用端口。
+
 > 没有 Python？去 [Releases](https://github.com/Mingqing-H/Muse-PI/releases) 下载 `Muse Pi.exe`，双击即用。关掉页面自动退出，干净利落。
 
 ---
@@ -65,29 +67,33 @@ Windows 用户直接双击 `start_server.bat`，连终端都不用开。
 
 | 文件 | 行数 | 做了什么 |
 |------|------|----------|
-| `backend/server.py` | ~1980 | HTTP 服务 + REST API + SQLite + Pi CLI 集成 |
-| `frontend/scripts/app.js` | ~3780 | 完整 SPA：四视图路由、SSE 流式对话、会话管理、配置系统、@文件引用 |
-| `frontend/styles/main.css` | ~4200 | MUSE 设计体系 + 双主题 + 动效系统 + 响应式 |
+| `backend/server.py` | ~2160 | HTTP 服务 + REST API + SQLite + Pi CLI 集成 |
+| `frontend/scripts/app.js` | ~4230 | 完整 SPA：四视图路由、SSE 流式对话、会话管理、配置系统、@文件引用 |
+| `frontend/styles/main.css` | ~4330 | MUSE 设计体系 + 双主题 + 动效系统 + 响应式 |
 
-近万行手写代码，没有一行是 AI 生成的脚手架。(你信吗？)
+超过万行手写代码，没有一行是 AI 生成的脚手架。(你信吗？)
 
 ### 它聪明
 
 - 🔌 **8 家 LLM 一键切换** —— MiMo、OpenAI、DeepSeek、Qwen、GLM、Kimi、SiliconFlow、Pi CLI，预设 API 地址点击即填
 - 💬 **SSE 流式对话** —— 看着 AI 一个字一个字打出来，不是干等转圈
+- 🔄 **会话内切换模型** —— 同一个对话中途换模型，上下文无缝衔接
 - 🧠 **@ 文件引用** —— 输入 `@` 自动弹出项目文件列表，直接引用代码上下文
 - 🖼️ **项目内图片渲染** —— Agent 生成的图自动显示在对话里
 - 📐 **LaTeX 数学渲染** —— MathJax 加持，`$E=mc^2$` 直接变公式
 - 🔄 **会话持久化** —— SQLite 存一切，关了再开对话还在
 - 📂 **项目隔离** —— 不同项目绑定独立的 Pi CLI 会话目录
-- 💓 **心跳检测** —— 浏览器关了服务器自动退出，不多占你一个端口
-- 🔍 **端口自动寻找** —— 默认端口被占了？自动找下一个可用的
+- 🤖 **Agent 路径自动识别** —— Pi CLI 安装在哪？不用手动填，自动探测
+- 💓 **标签页生命周期管理** —— 多标签页各自心跳，全部关闭才退出服务器
+- 🔍 **端口自动寻找** —— 默认端口被占了？自动清理旧进程并跳到下一个可用端口
 
 ### 它自由
 
 - 🏠 **file:// 模式** —— 不启动服务器也能用，直接双击 `index.html` 打开，数据存 localStorage
 - 💾 **localStorage → SQLite 自动迁移** —— 从 file 模式切到服务器模式，旧数据自动搬过去
+- 🎨 **背景可自定义** —— 换一张壁纸，换一种心情
 - 🎯 **Agent 模型可选** —— Pi CLI 支持 `--model` 切换，不同任务用不同模型
+- 📁 **数据存于用户目录** —— 配置和对话记录存在 `~/.musepi/`，不污染项目文件夹
 
 ---
 
@@ -110,7 +116,7 @@ Muse-PI/
 └── README.md               ← 你正在看的这个
 ```
 
-**三个核心文件，一万行代码，一个完整产品。**
+**三个核心文件，超过万行代码，一个完整产品。**
 
 ---
 
@@ -133,14 +139,16 @@ Muse-PI/
 
 ## 🚀 Release
 
-**[v1.0.0](https://github.com/Mingqing-H/Muse-PI/releases/tag/v1.0.0)** 已发布，附带打包好的 Windows `.exe`：
+**[v1.0.3](https://github.com/Mingqing-H/Muse-PI/releases/tag/v1.0.0)** 已发布，附带打包好的 Windows `.exe`：
 
 - 双击 `Muse Pi.exe`，自动启动服务器并打开浏览器
 - 关闭页面后服务器自动退出
 - 无需安装 Python 或任何依赖
 
+> 后续版本可通过 `git pull` 获取最新源码体验。
+
 ```bash
-# 或者从源码启动
+# 从源码启动
 python backend/server.py
 python backend/server.py --port 9000 --no-open   # 自定义端口，不自动打开浏览器
 ```
@@ -172,12 +180,15 @@ Agent 模式同理 —— 在配置页切到 **Agent 模型**，选择 Pi CLI，
 | `POST` | `/api/pi-project` | 新建 Agent 项目 |
 | `DELETE` | `/api/pi-project` | 删除项目（保留源文件） |
 | `GET` | `/api/pi-sessions` | 项目下的会话列表 |
+| `DELETE` | `/api/pi-session` | 删除单个会话文件 |
 | `POST` | `/api/cli/chat` | Pi CLI 流式对话（NDJSON） |
+| `GET` | `/api/pi-cli-info` | 获取 Pi CLI 安装信息 |
 | `GET` | `/api/pi-skills` | 列出项目可用 Skills |
 | `GET` | `/api/project-files` | 按关键词检索项目文件 |
 | `GET` | `/api/project-image` | 代理项目内的图片 |
 | `GET` | `/api/pi-models` | 列出 Pi CLI 可用模型 |
-| `GET` | `/api/heartbeat` | 浏览器心跳，服务器自动关停 |
+| `POST` | `/api/hello` | 标签页上线注册（心跳） |
+| `POST` | `/api/bye` | 标签页下线注销，全关则退服 |
 
 ---
 
