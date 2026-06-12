@@ -38,12 +38,17 @@ let sessionsCache = {};
 let activeIdCache = null;
 let activePresetIndex = -1;
 let activeConfigScope = CHAT_SCOPE;
+let activeAgentConfigTab = 'cli';
 let activeWorkspace = CHAT_SCOPE;
 let activeRunMode = 'chat';
 let piModelOptionsCache = null;
 let piModelOptionsError = '';
 let piDefaultModelName = '';
 let piModelOptionsLoading = false;
+let piAuthStatusCache = null;
+let piAuthStatusLoading = false;
+let piAuthActiveTab = 'configured';
+let piAuthSelectedProvider = '';
 let agentModelSearchValue = '';
 let enabledModelDraft = [];
 let skillOptionsCache = null;
@@ -372,16 +377,37 @@ function renderPresets() {
     const btn = document.createElement('button');
     const saved = store.providers[p.name];
     const hasConfig = !!saved;
+    const isAgentCliTab = activeConfigScope === AGENT_SCOPE && activeAgentConfigTab === 'cli';
     btn.className = 'preset-btn'
       + (hasConfig ? ' configured' : '')
-      + (i === activePresetIndex ? ' active' : '');
+      + (i === activePresetIndex && (activeConfigScope !== AGENT_SCOPE || isAgentCliTab) ? ' active' : '');
     btn.dataset.index = String(i);
     const savedModels = getEnabledModelsForConfig(saved, p);
     btn.title = hasConfig && savedModels.length ? `${p.name} 已配置：${savedModels.join(', ')}` : p.name;
-    btn.innerHTML = `<span class="preset-name">${escapeHtml(p.name)}</span>${hasConfig ? '<span class="preset-status">已配置</span>' : ''}`;
-    btn.onclick = () => applyPreset(i);
+    const label = activeConfigScope === AGENT_SCOPE ? 'Pi CLI 已配置' : p.name;
+    btn.innerHTML = `<span class="preset-name">${escapeHtml(label)}</span>${hasConfig ? '<span class="preset-status">已配置</span>' : ''}`;
+    btn.onclick = () => {
+      if (activeConfigScope === AGENT_SCOPE) activeAgentConfigTab = 'cli';
+      applyPreset(i);
+      syncAgentConfigSubtabVisibility();
+    };
     presetsEl.appendChild(btn);
   });
+  if (activeConfigScope === AGENT_SCOPE) {
+    const loginBtn = document.createElement('button');
+    const authCount = piAuthStatusCache?.authenticatedProviders?.length || 0;
+    loginBtn.className = 'preset-btn agent-subtab-btn' + (authCount ? ' configured' : '') + (activeAgentConfigTab === 'login' ? ' active' : '');
+    loginBtn.type = 'button';
+    loginBtn.innerHTML = `<span class="preset-name">Pi Login</span>${authCount ? `<span class="preset-status">${authCount} 个</span>` : ''}`;
+    loginBtn.onclick = () => {
+      activeAgentConfigTab = 'login';
+      syncAgentConfigSubtabVisibility();
+      renderPresets();
+      renderPiAuthPanel();
+      refreshPiAuthStatus({ silent: true });
+    };
+    presetsEl.appendChild(loginBtn);
+  }
 }
 
 function setConfigScope(scope) {
@@ -402,17 +428,34 @@ function setConfigScope(scope) {
       ? '为项目、对话、Agent 和配置页选择自定义背景'
       : scope === AGENT_SCOPE ? '配置用于本地项目操作的 Pi Agent' : '配置用于普通对话的 API 模型';
   }
+  if (scope !== AGENT_SCOPE) activeAgentConfigTab = 'cli';
+  syncAgentConfigSubtabVisibility();
   if (isBackgroundScope) {
     renderBackgroundConfig();
     return;
   }
   renderPresets();
   loadConfig();
+  syncAgentConfigSubtabVisibility();
 }
 
 document.querySelectorAll('.config-scope-btn').forEach(btn => {
   btn.onclick = () => setConfigScope(btn.dataset.scope || CHAT_SCOPE);
 });
+
+function syncAgentConfigSubtabVisibility() {
+  const isAgent = activeConfigScope === AGENT_SCOPE;
+  const showLogin = isAgent && activeAgentConfigTab === 'login';
+  const fieldIds = ['apiUrl', 'apiKey', 'modelName'];
+  fieldIds.forEach(id => {
+    const field = $(id)?.closest('.field');
+    if (field) field.classList.toggle('agent-subtab-hidden', showLogin);
+  });
+  if ($('piAuthPanel')) $('piAuthPanel').classList.toggle('agent-subtab-hidden', !showLogin);
+  if ($('piAuthPanel')) $('piAuthPanel').classList.toggle('hidden', !isAgent);
+  if ($('saveBtn')) $('saveBtn').classList.toggle('agent-subtab-hidden', showLogin);
+  if ($('clearBtn')) $('clearBtn').classList.toggle('agent-subtab-hidden', showLogin);
+}
 
 function applyPreset(i) {
   const p = PRESETS[i];
@@ -472,7 +515,16 @@ function syncProviderFields(activeIndex) {
   if (keyField) keyField.classList.toggle('hidden', isCli);
   if (isCli && $('apiKey')) $('apiKey').value = '';
   updatePiCliPathStatus();
-  if (isCli) refreshPiCliInfo();
+  if (isCli) {
+    refreshPiCliInfo();
+    refreshPiAuthStatus({ silent: true });
+    if (USE_DATABASE && piModelOptionsCache === null && !piModelOptionsLoading) {
+      refreshPiModelOptions().then(renderPiAuthPanel);
+    }
+  } else {
+    renderPiAuthPanel();
+  }
+  syncAgentConfigSubtabVisibility();
 }
 
 function isAutoPiCommand(value) {
@@ -522,6 +574,295 @@ async function refreshPiCliInfo() {
     updatePiCliPathStatus();
   } catch (err) {
     console.error(err);
+  }
+}
+
+function getPiAuthApiProviders() {
+  return piAuthStatusCache?.apiKeyProviders || [
+    { id: 'deepseek', name: 'DeepSeek', env: 'DEEPSEEK_API_KEY', defaultModel: 'deepseek-v4-pro' },
+    { id: 'openai', name: 'OpenAI', env: 'OPENAI_API_KEY', defaultModel: 'gpt-4.1' },
+    { id: 'anthropic', name: 'Anthropic', env: 'ANTHROPIC_API_KEY', defaultModel: 'claude-sonnet-4-5' },
+    { id: 'google', name: 'Google Gemini', env: 'GEMINI_API_KEY', defaultModel: 'gemini-2.5-pro' },
+    { id: 'moonshot', name: 'Moonshot', env: 'MOONSHOT_API_KEY', defaultModel: 'kimi-latest' },
+    { id: 'kimi-coding', name: 'Kimi For Coding', env: 'KIMI_API_KEY', defaultModel: 'kimi-k2p6-coding' },
+    { id: 'xiaomi-token-plan-cn', name: 'Xiaomi Token Plan CN', env: 'XIAOMI_TOKEN_PLAN_CN_API_KEY', defaultModel: 'mimo-v2.5-pro' },
+    { id: 'openrouter', name: 'OpenRouter', env: 'OPENROUTER_API_KEY', defaultModel: 'openai/gpt-4o' },
+    { id: 'zai', name: 'ZAI', env: 'ZAI_API_KEY', defaultModel: 'glm-4.5' },
+    { id: 'mistral', name: 'Mistral', env: 'MISTRAL_API_KEY', defaultModel: 'mistral-medium-2508' },
+  ];
+}
+
+function getPiAuthProviderMeta(providerId) {
+  return getPiAuthApiProviders().find(provider => provider.id === providerId) || getPiAuthApiProviders()[0];
+}
+
+function formatPiAuthProviderOption(provider) {
+  const name = provider?.name || provider?.id || '';
+  return name;
+}
+
+function getPiAuthProviderName(providerId) {
+  const meta = getPiAuthProviderMeta(providerId);
+  if (meta?.id === providerId) return meta.name;
+  const authenticated = (piAuthStatusCache?.authenticatedProviders || []).find(item => item.provider === providerId);
+  return authenticated?.name || providerId;
+}
+
+function getPiAuthSelectedProvider() {
+  if (piAuthSelectedProvider) return piAuthSelectedProvider;
+  const current = piAuthStatusCache?.defaultProvider || '';
+  if (getPiAuthProviderMeta(current)?.id === current) return current;
+  const configuredApiProvider = (piAuthStatusCache?.authenticatedProviders || []).find(item => item.isApiKey && item.supported)?.provider;
+  return configuredApiProvider || getPiAuthApiProviders()[0]?.id || '';
+}
+
+function isPiAuthProviderConfigured(providerId) {
+  return (piAuthStatusCache?.authenticatedProviders || []).some(item => item.provider === providerId && item.isApiKey);
+}
+
+async function refreshPiAuthStatus({ silent = false } = {}) {
+  if (!USE_DATABASE || piAuthStatusLoading) return;
+  piAuthStatusLoading = true;
+  try {
+    piAuthStatusCache = await apiRequest('/api/pi-auth-status');
+    if (activeConfigScope === AGENT_SCOPE) renderPresets();
+    renderPiAuthPanel();
+  } catch (err) {
+    console.error(err);
+    if (!silent) showToast('Pi 登录状态读取失败', 'var(--rose)');
+  } finally {
+    piAuthStatusLoading = false;
+  }
+}
+
+function renderPiAuthPanel() {
+  const panel = $('piAuthPanel');
+  if (!panel) return;
+  const visible = activeConfigScope === AGENT_SCOPE && activeAgentConfigTab === 'login';
+  panel.classList.toggle('hidden', !visible);
+  panel.classList.toggle('agent-subtab-hidden', !visible);
+  if (!visible) return;
+
+  if (!USE_DATABASE) {
+    panel.innerHTML = '<div class="pi-auth-empty">当前是本地文件模式，Pi 登录配置需要通过服务端运行。</div>';
+    return;
+  }
+
+  const providerId = getPiAuthSelectedProvider();
+  const configured = isPiAuthProviderConfigured(providerId);
+  const authenticated = piAuthStatusCache?.authenticatedProviders || [];
+  const configuredCount = authenticated.length;
+
+  panel.innerHTML = `
+    <div class="pi-auth-header">
+      <div>
+        <h3>Provider</h3>
+        <p>管理 Pi 已登录的模型提供商</p>
+      </div>
+      <button type="button" class="pi-auth-refresh" id="piAuthRefreshBtn">${piAuthStatusLoading ? '同步中' : '同步'}</button>
+    </div>
+    <div class="pi-auth-summary">
+      <span class="pi-auth-pill ${configuredCount ? 'configured' : ''}">${configuredCount ? `${configuredCount} 个已识别` : '未配置'}</span>
+      <span class="pi-auth-default">Pi 会从已登录提供商中读取可用模型</span>
+      <span class="pi-auth-dir" title="${escapeHtml(piAuthStatusCache?.agentDir || '')}">${escapeHtml(piAuthStatusCache?.agentDir || '正在读取 Pi 配置目录...')}</span>
+    </div>
+    <div class="pi-auth-tabs">
+      <button type="button" class="pi-auth-tab ${piAuthActiveTab === 'configured' ? 'active' : ''}" data-pi-auth-tab="configured">已配置</button>
+      <button type="button" class="pi-auth-tab ${piAuthActiveTab === 'login' ? 'active' : ''}" data-pi-auth-tab="login">API Key</button>
+      <button type="button" class="pi-auth-tab ${piAuthActiveTab === 'oauth' ? 'active' : ''}" data-pi-auth-tab="oauth">OAuth</button>
+    </div>
+    <div class="pi-auth-tab-panel">
+      ${renderPiAuthTabContent(providerId, configured)}
+    </div>
+  `;
+
+  panel.querySelectorAll('[data-pi-auth-tab]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      piAuthActiveTab = btn.dataset.piAuthTab || 'configured';
+      renderPiAuthPanel();
+    });
+  });
+  panel.querySelectorAll('[data-pi-auth-use]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      piAuthSelectedProvider = btn.dataset.piAuthUse || '';
+      piAuthActiveTab = 'login';
+      renderPiAuthPanel();
+    });
+  });
+  panel.querySelectorAll('[data-pi-auth-delete]').forEach(btn => {
+    btn.addEventListener('click', () => deletePiAuthConfig(btn.dataset.piAuthDelete));
+  });
+  $('piAuthProviderTrigger')?.addEventListener('click', event => {
+    event.stopPropagation();
+    $('piAuthProviderSelect')?.classList.toggle('open');
+  });
+  panel.querySelectorAll('[data-pi-provider-option]').forEach(btn => {
+    btn.addEventListener('click', event => {
+      event.stopPropagation();
+      piAuthSelectedProvider = btn.dataset.piProviderOption || '';
+      renderPiAuthPanel();
+    });
+  });
+  $('piAuthRefreshBtn')?.addEventListener('click', () => {
+    refreshPiAuthStatus();
+    refreshPiModelOptions().then(renderPiAuthPanel);
+  });
+  $('togglePiAuthKey')?.addEventListener('click', () => {
+    const input = $('piAuthApiKey');
+    if (input) input.type = input.type === 'password' ? 'text' : 'password';
+  });
+  $('piAuthSaveBtn')?.addEventListener('click', savePiAuthConfig);
+  $('piAuthDeleteBtn')?.addEventListener('click', () => deletePiAuthConfig());
+}
+
+function renderPiAuthTabContent(providerId, configured) {
+  if (piAuthActiveTab === 'login') return renderPiAuthLoginTab(providerId, configured);
+  if (piAuthActiveTab === 'oauth') return renderPiAuthOauthTab();
+  return renderPiAuthConfiguredTab();
+}
+
+function renderPiAuthLoginTab(providerId, configured) {
+  const providers = getPiAuthApiProviders();
+  const selected = (piAuthStatusCache?.authenticatedProviders || []).find(item => item.provider === providerId);
+  const selectedMeta = getPiAuthProviderMeta(providerId);
+  const selectedLabel = formatPiAuthProviderOption(selectedMeta);
+  return `
+    <div class="pi-auth-form-grid">
+      <div class="pi-auth-selected-state ${configured ? 'configured' : ''}">
+        <strong>${configured ? '当前提供商已配置' : '当前提供商未配置'}</strong>
+        <span>${escapeHtml(selectedMeta?.name || providerId)}${configured && selected?.keyPreview ? ` · API Key：${escapeHtml(selected.keyPreview)}` : ''}</span>
+      </div>
+      <div class="field pi-auth-field">
+        <label>模型提供商 <span class="hint">&mdash; API Key 登录</span></label>
+        <div class="pi-provider-select custom-select" id="piAuthProviderSelect">
+          <button type="button" class="pi-provider-trigger custom-select-trigger" id="piAuthProviderTrigger" title="${escapeHtml(providerId)}">
+            <span>${escapeHtml(selectedLabel)}</span>
+          </button>
+          <ul class="pi-provider-dropdown custom-select-dropdown">
+            ${providers.map(provider => {
+              const isSelected = provider.id === providerId;
+              const providerConfigured = isPiAuthProviderConfigured(provider.id);
+              const optionLabel = formatPiAuthProviderOption(provider);
+              return `<li><button type="button" class="pi-provider-option custom-select-option${isSelected ? ' selected' : ''}${providerConfigured ? ' configured' : ''}" data-pi-provider-option="${escapeHtml(provider.id)}" title="${escapeHtml(provider.id)}"><span>${escapeHtml(optionLabel)}</span>${providerConfigured ? '<em>已配置</em>' : ''}</button></li>`;
+            }).join('')}
+          </ul>
+        </div>
+      </div>
+      <div class="field pi-auth-field pi-auth-key-field">
+        <label>API Key <span class="hint">&mdash; ${selected?.keyPreview ? `当前：${escapeHtml(selected.keyPreview)}` : '保存到 Pi auth.json'}</span></label>
+        <div class="input-wrap">
+          <input type="password" id="piAuthApiKey" placeholder="${configured ? '重新粘贴 API Key' : '粘贴 API Key'}" spellcheck="false" autocomplete="off">
+          <button class="toggle-vis" id="togglePiAuthKey" type="button" title="Show / hide">&#9675;</button>
+        </div>
+      </div>
+      <div class="pi-auth-actions">
+        <button type="button" class="pi-auth-save" id="piAuthSaveBtn">保存 Pi 登录</button>
+        <button type="button" class="pi-auth-delete" id="piAuthDeleteBtn"${configured ? '' : ' disabled'}>删除认证</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderPiAuthConfiguredTab() {
+  const authenticated = piAuthStatusCache?.authenticatedProviders || [];
+  if (!authenticated.length) {
+    return '<div class="pi-auth-empty">还没有在 Pi auth.json 里识别到提供商。可以切到 API Key 添加一个。</div>';
+  }
+  return `
+    <div class="pi-auth-provider-grid">
+      ${authenticated.map(item => {
+        const canManage = item.isApiKey && item.supported;
+        return `
+          <div class="pi-auth-provider-card">
+            <div class="pi-auth-provider-main">
+              <strong>${escapeHtml(item.name || item.provider)}</strong>
+              <span>${escapeHtml(item.isApiKey && item.keyPreview ? `API Key：${item.keyPreview}` : item.provider)}</span>
+            </div>
+            <div class="pi-auth-provider-meta">
+              <span class="pi-auth-type ${item.isApiKey ? 'api' : 'oauth'}">${escapeHtml(item.type || 'unknown')}</span>
+              ${item.supported ? '' : '<span class="pi-auth-type locked">终端管理</span>'}
+            </div>
+            <div class="pi-auth-provider-actions">
+              ${canManage ? `<button type="button" data-pi-auth-use="${escapeHtml(item.provider)}">编辑</button><button type="button" data-pi-auth-delete="${escapeHtml(item.provider)}">删除</button>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function renderPiAuthOauthTab() {
+  const oauthProviders = piAuthStatusCache?.oauthProviders || [];
+  const configuredOauth = (piAuthStatusCache?.authenticatedProviders || []).filter(item => !item.isApiKey);
+  const configuredOauthIds = new Set(configuredOauth.map(item => item.provider));
+  const pendingOauthProviders = oauthProviders.filter(item => !configuredOauthIds.has(item.id));
+  return `
+    <div class="pi-auth-oauth-grid">
+      ${configuredOauth.length ? configuredOauth.map(item => `
+        <div class="pi-auth-oauth-card configured">
+          <strong>${escapeHtml(item.name || item.provider)}</strong>
+          <span>${escapeHtml(item.provider)} · 已在 Pi 中登录</span>
+        </div>
+      `).join('') : ''}
+      ${pendingOauthProviders.map(item => `
+        <div class="pi-auth-oauth-card">
+          <strong>${escapeHtml(item.name)}</strong>
+          <span>${escapeHtml(item.note)}</span>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function savePiAuthConfig() {
+  const provider = getPiAuthSelectedProvider();
+  const apiKey = $('piAuthApiKey')?.value.trim() || '';
+  if (!provider || !apiKey) {
+    showToast('请填写 Provider 和 API Key', 'var(--rose)');
+    return;
+  }
+  try {
+    const result = await apiRequest('/api/pi-auth', {
+      method: 'POST',
+      body: JSON.stringify({ provider, apiKey }),
+    });
+    piAuthStatusCache = result.status || piAuthStatusCache;
+    if (result.models) {
+      piModelOptionsCache = Array.isArray(result.models.models) ? result.models.models : piModelOptionsCache;
+      piDefaultModelName = (result.models.defaultModel || '').trim();
+      piModelOptionsError = result.models.error || '';
+    }
+    renderPiAuthPanel();
+    updateModelBadge();
+    updateAgentModelPicker();
+    renderPresets();
+    syncAgentConfigSubtabVisibility();
+    showToast('Pi 登录配置已保存', 'var(--accent)');
+  } catch (err) {
+    console.error(err);
+    showToast(extractErrorMessage(err) || 'Pi 登录配置保存失败', 'var(--rose)');
+  }
+}
+
+async function deletePiAuthConfig(providerOverride = '') {
+  const provider = providerOverride || getPiAuthSelectedProvider();
+  if (!provider) return;
+  try {
+    const result = await apiRequest('/api/pi-auth', {
+      method: 'DELETE',
+      body: JSON.stringify({ provider }),
+    });
+    piAuthStatusCache = result.status || piAuthStatusCache;
+    await refreshPiModelOptions();
+    renderPiAuthPanel();
+    renderPresets();
+    syncAgentConfigSubtabVisibility();
+    updateAgentModelPicker();
+    showToast('Pi 认证已删除', 'var(--muted)');
+  } catch (err) {
+    console.error(err);
+    showToast(extractErrorMessage(err) || 'Pi 认证删除失败', 'var(--rose)');
   }
 }
 
@@ -1693,6 +2034,7 @@ if ($('projectSelectTrigger')) {
   };
   document.addEventListener('click', e => {
     if (!$('projectSelect')?.contains(e.target)) $('projectSelect')?.classList.remove('open');
+    if (!$('piAuthProviderSelect')?.contains(e.target)) $('piAuthProviderSelect')?.classList.remove('open');
   });
 }
 if ($('btnNewProject')) $('btnNewProject').onclick = () => openProjectForm();

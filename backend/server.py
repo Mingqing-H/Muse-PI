@@ -60,6 +60,29 @@ PRESET_URLS = {
     "Pi CLI": "",
 }
 
+PI_API_KEY_PROVIDERS = [
+    {"id": "deepseek", "name": "DeepSeek", "env": "DEEPSEEK_API_KEY", "defaultModel": "deepseek-v4-pro"},
+    {"id": "openai", "name": "OpenAI", "env": "OPENAI_API_KEY", "defaultModel": "gpt-4.1"},
+    {"id": "anthropic", "name": "Anthropic", "env": "ANTHROPIC_API_KEY", "defaultModel": "claude-sonnet-4-5"},
+    {"id": "google", "name": "Google Gemini", "env": "GEMINI_API_KEY", "defaultModel": "gemini-2.5-pro"},
+    {"id": "moonshot", "name": "Moonshot", "env": "MOONSHOT_API_KEY", "defaultModel": "kimi-latest"},
+    {"id": "kimi-coding", "name": "Kimi For Coding", "env": "KIMI_API_KEY", "defaultModel": "kimi-k2p6-coding"},
+    {"id": "xiaomi-token-plan-cn", "name": "Xiaomi Token Plan CN", "env": "XIAOMI_TOKEN_PLAN_CN_API_KEY", "defaultModel": "mimo-v2.5-pro"},
+    {"id": "openrouter", "name": "OpenRouter", "env": "OPENROUTER_API_KEY", "defaultModel": "openai/gpt-4o"},
+    {"id": "zai", "name": "ZAI", "env": "ZAI_API_KEY", "defaultModel": "glm-4.5"},
+    {"id": "mistral", "name": "Mistral", "env": "MISTRAL_API_KEY", "defaultModel": "mistral-medium-2508"},
+]
+PI_API_KEY_PROVIDER_IDS = {provider["id"] for provider in PI_API_KEY_PROVIDERS}
+PI_OAUTH_PROVIDER_NOTES = [
+    {"id": "openai-codex", "name": "ChatGPT Plus/Pro (Codex)", "note": "需在终端使用 Pi OAuth 登录"},
+    {"id": "anthropic-oauth", "name": "Claude Pro/Max", "note": "需在终端使用 Pi OAuth 登录"},
+    {"id": "github-copilot", "name": "GitHub Copilot", "note": "需在终端使用 Pi OAuth 登录"},
+]
+PI_PROVIDER_LABELS = {
+    **{provider["id"]: provider["name"] for provider in PI_API_KEY_PROVIDERS},
+    **{provider["id"]: provider["name"] for provider in PI_OAUTH_PROVIDER_NOTES},
+}
+
 
 def now_ms():
     return int(time.time() * 1000)
@@ -898,6 +921,155 @@ def default_pi_agent_dir():
 
 def pi_agent_dir():
     return expand_home_path(os.environ.get("PI_CODING_AGENT_DIR") or default_pi_agent_dir())
+
+
+def pi_auth_path():
+    return pi_agent_dir() / "auth.json"
+
+
+def pi_settings_path():
+    return pi_agent_dir() / "settings.json"
+
+
+def read_json_file(path, default):
+    try:
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return default
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{Path(path).name} 不是有效的 JSON。") from exc
+    except OSError as exc:
+        raise ValueError(f"读取 {Path(path).name} 失败：{exc}") from exc
+    return value if isinstance(value, type(default)) else default
+
+
+def write_json_file(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if os.name != "nt":
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+
+def validate_pi_api_key_provider(provider):
+    provider = str(provider or "").strip()
+    if provider not in PI_API_KEY_PROVIDER_IDS:
+        raise ValueError("暂不支持该 Pi Provider 的前端 API Key 配置。")
+    return provider
+
+
+def validate_pi_api_key(api_key):
+    api_key = str(api_key or "").strip()
+    if not api_key:
+        raise ValueError("API Key 不能为空。")
+    return api_key
+
+
+def mask_pi_api_key(value):
+    value = str(value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("!"):
+        return "命令读取"
+    if re.fullmatch(r"[A-Z][A-Z0-9_]{2,}", value):
+        return f"环境变量：{value}"
+    if len(value) <= 8:
+        return "已保存"
+    return f"{value[:4]}...{value[-4:]}"
+
+
+def pi_auth_status():
+    auth_path = pi_auth_path()
+    settings_path = pi_settings_path()
+    auth = read_json_file(auth_path, {})
+    settings = read_json_file(settings_path, {})
+    if not isinstance(auth, dict):
+        auth = {}
+    if not isinstance(settings, dict):
+        settings = {}
+
+    authenticated = []
+    for provider, credential in auth.items():
+        if not isinstance(credential, dict):
+            continue
+        credential_type = str(credential.get("type") or "").strip()
+        authenticated.append(
+            {
+                "provider": provider,
+                "name": PI_PROVIDER_LABELS.get(provider, provider),
+                "type": credential_type or "unknown",
+                "isApiKey": credential_type == "api_key",
+                "keyPreview": mask_pi_api_key(credential.get("key")) if credential_type == "api_key" else "",
+                "supported": provider in PI_API_KEY_PROVIDER_IDS,
+            }
+        )
+
+    authenticated.sort(key=lambda item: item["provider"])
+    return {
+        "agentDir": str(pi_agent_dir()),
+        "authPath": str(auth_path),
+        "settingsPath": str(settings_path),
+        "defaultProvider": str(settings.get("defaultProvider") or ""),
+        "defaultModel": str(settings.get("defaultModel") or ""),
+        "authenticatedProviders": authenticated,
+        "apiKeyProviders": PI_API_KEY_PROVIDERS,
+        "oauthProviders": PI_OAUTH_PROVIDER_NOTES,
+    }
+
+
+def save_pi_api_key_auth(provider, api_key, default_model=None):
+    provider = validate_pi_api_key_provider(provider)
+    api_key = validate_pi_api_key(api_key)
+
+    auth_path = pi_auth_path()
+    settings_path = pi_settings_path()
+    auth = read_json_file(auth_path, {})
+    settings = read_json_file(settings_path, {})
+    if not isinstance(auth, dict):
+        auth = {}
+    if not isinstance(settings, dict):
+        settings = {}
+
+    auth[provider] = {"type": "api_key", "key": api_key}
+    settings["defaultProvider"] = provider
+
+    write_json_file(auth_path, auth)
+    write_json_file(settings_path, settings)
+    return pi_auth_status()
+
+
+def delete_pi_api_key_auth(provider):
+    provider = validate_pi_api_key_provider(provider)
+    auth_path = pi_auth_path()
+    settings_path = pi_settings_path()
+    auth = read_json_file(auth_path, {})
+    settings = read_json_file(settings_path, {})
+    if not isinstance(auth, dict):
+        auth = {}
+    if not isinstance(settings, dict):
+        settings = {}
+
+    credential = auth.get(provider)
+    if isinstance(credential, dict) and credential.get("type") == "api_key":
+        auth.pop(provider, None)
+    elif provider in auth:
+        raise ValueError("该 Provider 不是 API Key 配置，请在终端使用 Pi 管理。")
+
+    if settings.get("defaultProvider") == provider:
+        fallback = next((name for name, value in auth.items() if isinstance(value, dict) and value.get("type") == "api_key"), "")
+        if fallback:
+            settings["defaultProvider"] = fallback
+            settings.pop("defaultModel", None)
+        else:
+            settings.pop("defaultProvider", None)
+            settings.pop("defaultModel", None)
+
+    write_json_file(auth_path, auth)
+    write_json_file(settings_path, settings)
+    return pi_auth_status()
 
 
 def load_pi_settings():
@@ -1977,6 +2149,10 @@ class MusePiHandler(SimpleHTTPRequestHandler):
                 self.send_json(inspect_pi_cli(provider_config.get("apiUrl") if provider == "Pi CLI" else ""))
             return
 
+        if self.path == "/api/pi-auth-status":
+            self.send_json(pi_auth_status())
+            return
+
         if self.path == "/api/pi-models":
             with db_connection() as conn:
                 config = load_config(conn)
@@ -2017,6 +2193,21 @@ class MusePiHandler(SimpleHTTPRequestHandler):
             payload = self.read_json()
             if self.path == "/api/cli/chat":
                 self.stream_cli_chat(payload)
+                return
+
+            if parsed_path == "/api/pi-auth":
+                status = save_pi_api_key_auth(payload.get("provider"), payload.get("apiKey"))
+                with db_connection() as conn:
+                    config = load_config(conn)
+                    provider = (config or {}).get("activeAgentProvider")
+                    provider_config = ((config or {}).get("providers") or {}).get(provider) or {}
+                self.send_json(
+                    {
+                        "ok": True,
+                        "status": status,
+                        "models": list_pi_models(provider_config.get("apiUrl") if provider == "Pi CLI" else ""),
+                    }
+                )
                 return
 
             with db_connection() as conn:
@@ -2064,6 +2255,15 @@ class MusePiHandler(SimpleHTTPRequestHandler):
 
     def do_DELETE(self):
         parsed_path = urlparse(self.path).path
+        if parsed_path == "/api/pi-auth":
+            try:
+                payload = self.read_json()
+                status = delete_pi_api_key_auth(payload.get("provider"))
+                self.send_json({"ok": True, "status": status})
+            except (OSError, ValueError) as exc:
+                self.send_json({"ok": False, "error": str(exc)}, status=400)
+            return
+
         if parsed_path == "/api/pi-session":
             try:
                 payload = self.read_json()

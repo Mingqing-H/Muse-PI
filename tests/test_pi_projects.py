@@ -329,5 +329,150 @@ class PiProjectTests(unittest.TestCase):
                 with self.assertRaises(FileNotFoundError):
                     server.delete_pi_project_dir(session_dir=str(candidate))
 
+
+class PiAuthConfigTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.base = Path(self.temp.name)
+        self.agent_dir = self.base / ".pi" / "agent"
+        self.env = patch.dict(os.environ, {"PI_CODING_AGENT_DIR": str(self.agent_dir)})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.temp.cleanup()
+
+    def read_auth(self):
+        return json.loads((self.agent_dir / "auth.json").read_text(encoding="utf-8"))
+
+    def read_settings(self):
+        return json.loads((self.agent_dir / "settings.json").read_text(encoding="utf-8"))
+
+    def test_save_pi_auth_creates_auth_and_settings_files(self):
+        status = server.save_pi_api_key_auth("deepseek", "sk-test")
+
+        auth = self.read_auth()
+        settings = self.read_settings()
+        self.assertEqual(auth["deepseek"], {"type": "api_key", "key": "sk-test"})
+        self.assertEqual(settings["defaultProvider"], "deepseek")
+        self.assertEqual(status["defaultProvider"], "deepseek")
+        self.assertIn("deepseek", {item["provider"] for item in status["authenticatedProviders"]})
+
+    def test_save_pi_auth_preserves_other_auth_entries_and_settings_fields(self):
+        self.agent_dir.mkdir(parents=True)
+        (self.agent_dir / "auth.json").write_text(
+            json.dumps(
+                {
+                    "openai-codex": {
+                        "type": "oauth",
+                        "access": "access-token",
+                        "refresh": "refresh-token",
+                    },
+                    "openai": {"type": "api_key", "key": "old"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.agent_dir / "settings.json").write_text(
+            json.dumps({"shellPath": "bash", "skills": ["~/.claude/skills"]}),
+            encoding="utf-8",
+        )
+
+        server.save_pi_api_key_auth("deepseek", "new-key")
+
+        auth = self.read_auth()
+        settings = self.read_settings()
+        self.assertEqual(auth["openai-codex"]["refresh"], "refresh-token")
+        self.assertEqual(auth["openai"]["key"], "old")
+        self.assertEqual(auth["deepseek"], {"type": "api_key", "key": "new-key"})
+        self.assertEqual(settings["shellPath"], "bash")
+        self.assertEqual(settings["skills"], ["~/.claude/skills"])
+        self.assertEqual(settings["defaultProvider"], "deepseek")
+        self.assertNotIn("defaultModel", settings)
+
+    def test_pi_auth_status_does_not_expose_secret_fields(self):
+        self.agent_dir.mkdir(parents=True)
+        (self.agent_dir / "auth.json").write_text(
+            json.dumps(
+                {
+                    "deepseek": {"type": "api_key", "key": "sk-secret"},
+                    "openai-codex": {
+                        "type": "oauth",
+                        "access": "access-token",
+                        "refresh": "refresh-token",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.agent_dir / "settings.json").write_text(
+            json.dumps({"defaultProvider": "deepseek", "defaultModel": "deepseek-chat"}),
+            encoding="utf-8",
+        )
+
+        status = server.pi_auth_status()
+        serialized = json.dumps(status, ensure_ascii=False)
+
+        self.assertNotIn("sk-secret", serialized)
+        self.assertNotIn("access-token", serialized)
+        self.assertNotIn("refresh-token", serialized)
+        self.assertEqual(status["defaultProvider"], "deepseek")
+        providers = {item["provider"]: item for item in status["authenticatedProviders"]}
+        self.assertTrue(providers["deepseek"]["isApiKey"])
+        self.assertEqual(providers["deepseek"]["name"], "DeepSeek")
+        self.assertEqual(providers["deepseek"]["keyPreview"], "sk-s...cret")
+        self.assertFalse(providers["openai-codex"]["isApiKey"])
+        self.assertEqual(providers["openai-codex"]["name"], "ChatGPT Plus/Pro (Codex)")
+
+    def test_delete_pi_auth_removes_provider_and_falls_back_default(self):
+        self.agent_dir.mkdir(parents=True)
+        (self.agent_dir / "auth.json").write_text(
+            json.dumps(
+                {
+                    "deepseek": {"type": "api_key", "key": "deepseek-key"},
+                    "openai": {"type": "api_key", "key": "openai-key"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (self.agent_dir / "settings.json").write_text(
+            json.dumps({"defaultProvider": "deepseek", "defaultModel": "deepseek-chat"}),
+            encoding="utf-8",
+        )
+
+        status = server.delete_pi_api_key_auth("deepseek")
+
+        auth = self.read_auth()
+        settings = self.read_settings()
+        self.assertNotIn("deepseek", auth)
+        self.assertEqual(settings["defaultProvider"], "openai")
+        self.assertNotIn("defaultModel", settings)
+        self.assertEqual(status["defaultProvider"], "openai")
+
+    def test_delete_last_default_pi_auth_clears_default(self):
+        self.agent_dir.mkdir(parents=True)
+        (self.agent_dir / "auth.json").write_text(
+            json.dumps({"deepseek": {"type": "api_key", "key": "deepseek-key"}}),
+            encoding="utf-8",
+        )
+        (self.agent_dir / "settings.json").write_text(
+            json.dumps({"defaultProvider": "deepseek", "defaultModel": "deepseek-chat", "shellPath": "bash"}),
+            encoding="utf-8",
+        )
+
+        server.delete_pi_api_key_auth("deepseek")
+
+        settings = self.read_settings()
+        self.assertNotIn("defaultProvider", settings)
+        self.assertNotIn("defaultModel", settings)
+        self.assertEqual(settings["shellPath"], "bash")
+
+    def test_pi_auth_rejects_invalid_provider_and_key(self):
+        with self.assertRaises(ValueError):
+            server.save_pi_api_key_auth("not-real", "sk-test")
+        with self.assertRaises(ValueError):
+            server.save_pi_api_key_auth("deepseek", "")
+
+
 if __name__ == "__main__":
     unittest.main()
