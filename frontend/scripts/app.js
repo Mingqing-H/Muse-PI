@@ -952,11 +952,17 @@ function getAgentModelName() {
   return (cfg?.modelName || 'default').trim() || 'default';
 }
 
+function getDefaultAgentModelName() {
+  const cfg = getScopedConfig(AGENT_SCOPE);
+  return (cfg?.modelName || 'default').trim() || 'default';
+}
+
 function getAgentModelOptions() {
   const current = getAgentModelName();
+  const defaultModel = getDefaultAgentModelName();
   const discovered = (piModelOptionsCache || []).map(model => model.value || model.id || model).filter(Boolean);
   const fallback = discovered.length ? [] : PI_MODEL_OPTIONS;
-  return Array.from(new Set([current, ...discovered, ...fallback])).filter(Boolean);
+  return Array.from(new Set([current, defaultModel, ...discovered, ...fallback])).filter(Boolean);
 }
 
 async function refreshPiModelOptions() {
@@ -989,8 +995,7 @@ function getEffectiveAgentModelName(modelName) {
   return model === 'default' && defaultModel && defaultModel !== 'default' ? defaultModel : model;
 }
 
-function setAgentModelName(modelName) {
-  const model = (modelName || '').trim() || 'default';
+function ensureAgentProviderConfig() {
   const store = toConfigStore(configCache);
   let provider = store.activeAgentProvider || 'Pi CLI';
   if (!isCliProviderName(provider)) provider = 'Pi CLI';
@@ -1005,10 +1010,17 @@ function setAgentModelName(modelName) {
     configCache = store;
     persistConfig();
   }
+  return { store, provider, existing: store.providers[provider] || existing };
+}
+
+function setAgentModelName(modelName) {
+  const model = (modelName || '').trim() || 'default';
+  const { provider } = ensureAgentProviderConfig();
   const session = getActiveSession();
   if (session && getSessionKind(session) === AGENT_SCOPE) {
     updateSessionById(getActiveId(), { modelProvider: provider, modelName: model });
   } else {
+    const { store, existing } = ensureAgentProviderConfig();
     store.activeAgentProvider = provider;
     store.providers[provider] = { ...existing, provider, apiKey: '', modelName: model };
     configCache = store;
@@ -1017,6 +1029,34 @@ function setAgentModelName(modelName) {
   updateModelBadge();
   updateAgentModelPicker();
   showToast(`Agent 模型已切换为 ${model}`, 'var(--accent)');
+}
+
+function setDefaultAgentModelName(modelName) {
+  const model = (modelName || '').trim() || 'default';
+  const { store, provider, existing } = ensureAgentProviderConfig();
+  store.activeAgentProvider = provider;
+  store.providers[provider] = {
+    ...existing,
+    provider,
+    apiKey: '',
+    modelName: model,
+    enabledModels: uniqueModels([model, ...(existing.enabledModels || [])]),
+  };
+  configCache = store;
+  Object.values(getSessions()).forEach(session => {
+    if (getSessionKind(session) === AGENT_SCOPE && isUnusedDraftSession(session)) {
+      session.modelProvider = provider;
+      session.modelName = model;
+    }
+  });
+  saveSessions(getSessions());
+  persistConfig().catch(err => {
+    console.error(err);
+    showToast('默认模型保存失败', 'var(--rose)');
+  });
+  updateModelBadge();
+  updateAgentModelPicker();
+  showToast(`新 Agent 会话默认使用 ${model}`, 'var(--accent)');
 }
 
 function getChatModelOptions() {
@@ -1100,6 +1140,7 @@ function renderAgentModelMenu() {
   const menu = $('agentModelMenu');
   if (!menu) return;
   const current = getAgentModelName();
+  const defaultModel = getDefaultAgentModelName();
   const query = agentModelSearchValue.trim().toLowerCase();
   const allOptions = getAgentModelOptions();
   const visibleOptions = query
@@ -1129,23 +1170,56 @@ function renderAgentModelMenu() {
   };
   menu.appendChild(search);
 
+  const defaultInfo = document.createElement('div');
+  defaultInfo.className = 'agent-model-default-info';
+  defaultInfo.innerHTML = `<span>默认</span><strong>${escapeHtml(formatAgentModelLabel(defaultModel))}</strong>`;
+  menu.appendChild(defaultInfo);
+
   const list = document.createElement('div');
   list.className = 'agent-model-list';
   menu.appendChild(list);
 
   visibleOptions.forEach(model => {
+    const row = document.createElement('div');
+    row.className = 'agent-model-option-row';
+    row.classList.toggle('active', model === current);
+    row.classList.toggle('is-default', model === defaultModel);
+
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'agent-model-option';
-    btn.classList.toggle('active', model === current);
-    btn.textContent = formatAgentModelLabel(model);
+    btn.className = 'agent-model-option agent-model-option-main';
+    const label = document.createElement('span');
+    label.className = 'agent-model-option-label';
+    label.textContent = formatAgentModelLabel(model);
+    btn.appendChild(label);
+    if (model === current) {
+      const currentBadge = document.createElement('span');
+      currentBadge.className = 'agent-model-badge';
+      currentBadge.textContent = '当前';
+      btn.appendChild(currentBadge);
+    }
     btn.title = model === 'default' ? `Pi CLI 默认模型：${formatAgentModelLabel(model)}` : model;
     btn.onpointerdown = event => {
       event.preventDefault();
       closeAgentModelMenu();
       setAgentModelName(model);
     };
-    list.appendChild(btn);
+
+    const defaultBtn = document.createElement('button');
+    defaultBtn.type = 'button';
+    defaultBtn.className = 'agent-model-default-btn';
+    defaultBtn.classList.toggle('active', model === defaultModel);
+    defaultBtn.textContent = model === defaultModel ? '默认' : '设默认';
+    defaultBtn.title = model === defaultModel ? '当前新 Agent 会话默认模型' : `设为新 Agent 会话默认模型：${model}`;
+    defaultBtn.onpointerdown = event => {
+      event.preventDefault();
+      event.stopPropagation();
+      setDefaultAgentModelName(model);
+    };
+
+    row.appendChild(btn);
+    row.appendChild(defaultBtn);
+    list.appendChild(row);
   });
 
   if (!visibleOptions.length) {
@@ -1834,6 +1908,12 @@ function createSession() {
   }
   const reusableId = findReusableDraftSessionId();
   if (reusableId) {
+    const reusable = getSessions()[reusableId];
+    if (isAgentWorkspace() && reusable && !reusable.modelName) {
+      reusable.modelProvider = 'Pi CLI';
+      reusable.modelName = getDefaultAgentModelName();
+      saveSessions(getSessions());
+    }
     setActiveId(reusableId);
     renderSessionList(); renderMessages();
     updateSendButtonState();
@@ -1841,13 +1921,16 @@ function createSession() {
   }
   const s = getSessions();
   const id = 's_' + Date.now();
+  const isAgent = isAgentWorkspace();
   s[id] = {
     id,
-    title: isAgentWorkspace() ? '新 Agent 会话' : '新对话',
+    title: isAgent ? '新 Agent 会话' : '新对话',
     kind: activeWorkspace,
-    projectId: isAgentWorkspace() ? getActiveProjectId() : null,
-    mode: isAgentWorkspace() ? 'task' : 'chat',
+    projectId: isAgent ? getActiveProjectId() : null,
+    mode: isAgent ? 'task' : 'chat',
     status: 'idle',
+    modelProvider: isAgent ? 'Pi CLI' : '',
+    modelName: isAgent ? getDefaultAgentModelName() : '',
     messages: [],
     created: Date.now(),
   };

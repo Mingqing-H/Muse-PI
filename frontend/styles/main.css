@@ -2104,6 +2104,37 @@ body {
   box-shadow: 0 0 0 3px oklch(72% 0.10 75 / 0.10);
 }
 
+.agent-model-default-info {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid oklch(72% 0.10 75 / 0.18);
+  border-radius: 10px;
+  background: oklch(72% 0.10 75 / 0.08);
+  color: var(--muted-light);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.agent-model-default-info span {
+  color: var(--accent);
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.agent-model-default-info strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-cream);
+  font-family: var(--font-mono);
+  font-weight: 500;
+}
+
 .agent-model-list {
   max-height: min(360px, 52vh);
   overflow-y: auto;
@@ -2122,6 +2153,13 @@ body {
   border-radius: 999px;
 }
 
+.agent-model-option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 68px;
+  align-items: stretch;
+  gap: 6px;
+}
+
 .agent-model-option {
   width: 100%;
   min-height: 32px;
@@ -2137,10 +2175,62 @@ body {
   overflow-wrap: anywhere;
 }
 
+.agent-model-option-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-model-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .agent-model-option:hover,
-.agent-model-option.active {
+.agent-model-option.active,
+.agent-model-option-row.active .agent-model-option-main {
   color: var(--accent);
   background: oklch(72% 0.10 75 / 0.10);
+}
+
+.agent-model-badge,
+.agent-model-default-btn {
+  flex-shrink: 0;
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  font-family: var(--font-body);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.agent-model-badge {
+  padding: 4px 6px;
+  color: var(--accent);
+  background: oklch(72% 0.10 75 / 0.08);
+}
+
+.agent-model-default-btn {
+  min-height: 32px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--muted-light);
+  cursor: pointer;
+  transition: all 0.25s var(--ease-out-expo);
+}
+
+.agent-model-default-btn:hover,
+.agent-model-default-btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: oklch(72% 0.10 75 / 0.10);
+}
+
+.agent-model-default-btn.active {
+  cursor: default;
 }
 
 .chat-model-provider,
