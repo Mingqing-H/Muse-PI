@@ -855,11 +855,12 @@ async function deletePiAuthConfig(providerOverride = '') {
     });
     piAuthStatusCache = result.status || piAuthStatusCache;
     await refreshPiModelOptions();
+    const replacementModel = await resetUnavailableAgentModelAfterPiAuthChange(provider);
     renderPiAuthPanel();
     renderPresets();
     syncAgentConfigSubtabVisibility();
     updateAgentModelPicker();
-    showToast('Pi 认证已删除', 'var(--muted)');
+    showToast(replacementModel ? `Pi 认证已删除，相关 Agent 模型已切换为 ${replacementModel}` : 'Pi 认证已删除', 'var(--muted)');
   } catch (err) {
     console.error(err);
     showToast(extractErrorMessage(err) || 'Pi 认证删除失败', 'var(--rose)');
@@ -1301,7 +1302,14 @@ function getDefaultAgentModelName() {
 function getAgentModelOptions() {
   const current = getAgentModelName();
   const defaultModel = getDefaultAgentModelName();
-  const discovered = (piModelOptionsCache || []).map(model => model.value || model.id || model).filter(Boolean);
+  const discovered = getDiscoveredAgentModelValues();
+  if (discovered.length) {
+    return Array.from(new Set([
+      current === 'default' || discovered.includes(current) ? current : '',
+      defaultModel === 'default' || discovered.includes(defaultModel) ? defaultModel : '',
+      ...discovered,
+    ])).filter(Boolean);
+  }
   const fallback = discovered.length ? [] : PI_MODEL_OPTIONS;
   return Array.from(new Set([current, defaultModel, ...discovered, ...fallback])).filter(Boolean);
 }
@@ -1325,15 +1333,74 @@ async function refreshPiModelOptions() {
 function formatAgentModelLabel(modelName) {
   const model = (modelName || '').trim() || 'default';
   if (model !== 'default') return model;
-  const defaultModel = (piDefaultModelName || '').trim();
+  const discovered = getDiscoveredAgentModelValues();
+  const defaultModel = (piDefaultModelName || '').trim() || (discovered.length === 1 ? discovered[0] : '');
   if (!defaultModel || defaultModel === 'default') return model;
   return `default（${defaultModel}）`;
 }
 
 function getEffectiveAgentModelName(modelName) {
   const model = (modelName || '').trim() || 'default';
-  const defaultModel = (piDefaultModelName || '').trim();
+  const discovered = getDiscoveredAgentModelValues();
+  const defaultModel = (piDefaultModelName || '').trim() || (discovered.length === 1 ? discovered[0] : '');
   return model === 'default' && defaultModel && defaultModel !== 'default' ? defaultModel : model;
+}
+
+function getDiscoveredAgentModelValues() {
+  return (piModelOptionsCache || []).map(model => model.value || model.id || model).filter(Boolean);
+}
+
+async function resetUnavailableAgentModelAfterPiAuthChange(deletedProvider = '') {
+  const discovered = getDiscoveredAgentModelValues();
+  const hasFreshModelList = Array.isArray(piModelOptionsCache) && discovered.length > 0;
+  const resolvedDefault = (piDefaultModelName || '').trim();
+  const replacementCandidates = uniqueModels([
+    ...discovered,
+    resolvedDefault && resolvedDefault !== 'default' ? resolvedDefault : '',
+  ]).filter(model => !deletedProvider || !model.startsWith(`${deletedProvider}/`));
+  const replacementModel = replacementCandidates[0] || 'default';
+  const current = getAgentModelName();
+  const defaultModel = getDefaultAgentModelName();
+  const shouldResetCurrent = current !== 'default'
+    && (
+      (deletedProvider && current.startsWith(`${deletedProvider}/`))
+      || (hasFreshModelList && !discovered.includes(current))
+    );
+  const shouldResetDefault = defaultModel !== 'default'
+    && (
+      (deletedProvider && defaultModel.startsWith(`${deletedProvider}/`))
+      || (hasFreshModelList && !discovered.includes(defaultModel))
+    );
+  if (!shouldResetCurrent && !shouldResetDefault) return '';
+
+  const { store, provider, existing } = ensureAgentProviderConfig();
+  const nextEnabledModels = uniqueModels([replacementModel, 'default', ...(discovered.length ? discovered : existing.enabledModels || [])])
+    .filter(model => model === 'default' || !deletedProvider || !model.startsWith(`${deletedProvider}/`));
+  store.activeAgentProvider = provider;
+  store.providers[provider] = {
+    ...existing,
+    provider,
+    apiKey: '',
+    modelName: replacementModel,
+    enabledModels: nextEnabledModels.length ? nextEnabledModels : ['default'],
+  };
+  configCache = store;
+
+  const session = getActiveSession();
+  if (shouldResetCurrent && session && getSessionKind(session) === AGENT_SCOPE) {
+    updateSessionById(getActiveId(), { modelProvider: provider, modelName: replacementModel });
+  }
+  Object.values(getSessions()).forEach(item => {
+    if (shouldResetDefault && getSessionKind(item) === AGENT_SCOPE && isUnusedDraftSession(item)) {
+      item.modelProvider = provider;
+      item.modelName = replacementModel;
+    }
+  });
+  saveSessions(getSessions());
+  await persistConfig();
+  updateModelBadge();
+  updateAgentModelPicker();
+  return replacementModel;
 }
 
 function ensureAgentProviderConfig() {

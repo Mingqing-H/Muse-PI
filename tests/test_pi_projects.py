@@ -467,6 +467,19 @@ class PiAuthConfigTests(unittest.TestCase):
         self.assertNotIn("defaultModel", settings)
         self.assertEqual(settings["shellPath"], "bash")
 
+    def test_default_pi_model_uses_default_provider_candidate(self):
+        self.agent_dir.mkdir(parents=True)
+        (self.agent_dir / "settings.json").write_text(
+            json.dumps({"defaultProvider": "deepseek"}),
+            encoding="utf-8",
+        )
+        candidates = [
+            {"value": "openai/gpt-4.1", "provider": "openai", "id": "gpt-4.1"},
+            {"value": "deepseek/deepseek-chat", "provider": "deepseek", "id": "deepseek-chat"},
+        ]
+
+        self.assertEqual(server.load_default_pi_model(candidates), "deepseek/deepseek-chat")
+
     def test_pi_auth_rejects_invalid_provider_and_key(self):
         with self.assertRaises(ValueError):
             server.save_pi_api_key_auth("not-real", "sk-test")

@@ -1119,7 +1119,7 @@ def normalize_pi_model_value(value):
     return ""
 
 
-def load_default_pi_model():
+def load_default_pi_model(candidate_models=None):
     settings, _settings_path = load_pi_settings()
     if not isinstance(settings, dict):
         return ""
@@ -1144,6 +1144,17 @@ def load_default_pi_model():
     enabled = load_enabled_pi_models()
     if len(enabled) == 1:
         return enabled[0].get("value") or ""
+
+    default_provider = str(settings.get("defaultProvider") or "").strip()
+    if default_provider and candidate_models:
+        for model in candidate_models:
+            value = str((model or {}).get("value") or "").strip()
+            provider = str((model or {}).get("provider") or "").strip()
+            model_id = str((model or {}).get("id") or "").strip()
+            if provider == default_provider and model_id:
+                return value or f"{provider}/{model_id}"
+            if value.startswith(f"{default_provider}/"):
+                return value
     return ""
 
 
@@ -1195,7 +1206,7 @@ def list_pi_models(command=""):
 
     return {
         "models": merged,
-        "defaultModel": load_default_pi_model() or parse_default_pi_model_from_output(raw_output) or (merged[0].get("value") if len(merged) == 1 else ""),
+        "defaultModel": load_default_pi_model(merged) or parse_default_pi_model_from_output(raw_output) or (merged[0].get("value") if len(merged) == 1 else ""),
         "error": error,
         "raw": raw_output,
         "args": args,
