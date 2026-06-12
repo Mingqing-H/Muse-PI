@@ -1484,6 +1484,23 @@ function getVisibleSessionIds() {
   return isAgentWorkspace() ? getProjectSessionIds() : getChatSessionIds();
 }
 
+function isUnusedDraftSession(session) {
+  return !!session
+    && (session.messages || []).length === 0
+    && session.status !== 'running'
+    && !piPathKey(session.piSessionPath)
+    && !session.piSessionId
+    && !getSessionFlight(getSessionKind(session), session.id);
+}
+
+function findReusableDraftSessionId() {
+  const sessions = getSessions();
+  const visibleIds = getVisibleSessionIds();
+  const activeId = getActiveId();
+  if (visibleIds.includes(activeId) && isUnusedDraftSession(sessions[activeId])) return activeId;
+  return visibleIds.find(id => isUnusedDraftSession(sessions[id])) || null;
+}
+
 function updateAgentBranchBadge(project) {
   const badge = $('agentBranchBadge');
   if (!badge) return;
@@ -1814,6 +1831,13 @@ function createSession() {
   if (isAgentWorkspace() && !isProjectAvailable(getActiveProject())) {
     showToast('请新建项目或恢复项目文件夹', 'var(--rose)');
     return null;
+  }
+  const reusableId = findReusableDraftSessionId();
+  if (reusableId) {
+    setActiveId(reusableId);
+    renderSessionList(); renderMessages();
+    updateSendButtonState();
+    return reusableId;
   }
   const s = getSessions();
   const id = 's_' + Date.now();
