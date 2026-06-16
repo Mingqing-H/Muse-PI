@@ -2133,6 +2133,19 @@ function firstUserMessageContent(session) {
   return normalizeMessageContent(first?.content);
 }
 
+function isPiAuthFailureContent(content) {
+  const text = normalizeMessageContent(content).toLowerCase();
+  return /^no api key for provider:/.test(text)
+    || /^api key is required for provider:/.test(text)
+    || text.includes('no api key for provider');
+}
+
+function hasPiAuthFailureMessage(session) {
+  return (session?.messages || []).some(message => (
+    message?.role === 'assistant' && isPiAuthFailureContent(message.content)
+  ));
+}
+
 function findLocalSessionForPiSession(sessions, piSession, projectId, pathToId) {
   const key = piPathKey(piSession.piSessionPath);
   if (key && pathToId.has(key)) return pathToId.get(key);
@@ -2140,13 +2153,14 @@ function findLocalSessionForPiSession(sessions, piSession, projectId, pathToId) 
 
   const piFirstUser = firstUserMessageContent(piSession);
   if (!piFirstUser) return null;
+  const piIsAuthFailure = hasPiAuthFailureMessage(piSession);
 
   const candidates = Object.entries(sessions)
     .filter(([, session]) => (
       getSessionKind(session) === AGENT_SCOPE
       && (session.projectId || 'default') === projectId
-      && !piPathKey(session.piSessionPath)
       && firstUserMessageContent(session) === piFirstUser
+      && (!piPathKey(session.piSessionPath) || (piIsAuthFailure && hasPiAuthFailureMessage(session)))
     ))
     .sort(([, a], [, b]) => (b.created || 0) - (a.created || 0));
   return candidates[0]?.[0] || null;
