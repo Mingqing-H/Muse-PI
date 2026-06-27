@@ -5,5 +5,4 @@ __pycache__/
 data/
 build/
 dist/
-*.spec
 .playwright-mcp/
